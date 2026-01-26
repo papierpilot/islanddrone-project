@@ -1024,6 +1024,30 @@ function escapeHtml(s) {
 }
 
 // =============================
+// Maps handoff (optional)
+// - Opens a coordinate in the user's maps app (usually Google Maps; falls back to browser)
+// - No routing, no navigation logic inside this app
+// =============================
+function openInMaps(lat, lon, name = "") {
+  const n = Number(lat);
+  const e = Number(lon);
+  if (!Number.isFinite(n) || !Number.isFinite(e)) return;
+
+  const label = String(name || "").trim();
+  // Universal: works on iOS + Android, opens installed app when available
+  const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${n},${e}${label ? ` (${label})` : ""}`)}`;
+  try {
+    window.open(url, "_blank", "noopener,noreferrer");
+  } catch (_) {
+    window.location.href = url;
+  }
+}
+
+// ensure global access for Leaflet popup inline onclick
+try { window.openInMaps = openInMaps; } catch (_) {}
+
+
+// =============================
 // Wire buttons (safe)
 // =============================
 if (btnManual) btnManual.addEventListener("click", checkManual);
@@ -1560,6 +1584,13 @@ function _spotPopupHTML(modeKey, spot) {
       ${short}
       ${long}
       ${tags}
+      <div style="margin-top:10px;">
+        <button type="button"
+          onclick="openInMaps(${spot.lat}, ${spot.lon}, ${JSON.stringify(spot.name || "")})"
+          style="padding:6px 10px; border-radius:10px; border:1px solid rgba(255,255,255,0.14); background:rgba(255,255,255,0.08); color:inherit; cursor:pointer;">
+          In Maps öffnen
+        </button>
+      </div>
       <div style="margin-top:10px; font-size:12px; opacity:.7;">${_spotSafe(hint)}</div>
     </div>
   `;
