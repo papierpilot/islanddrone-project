@@ -25,6 +25,43 @@ const PROXY = "";
 // Map defaults
 const MAP_DEFAULT_ZOOM = 10;
 
+
+
+// =============================
+// Layout: make map as large as possible (esp. on mobile)
+// =============================
+function applyResponsiveLayout() {
+  try {
+    const mapEl = document.getElementById("map");
+    if (!mapEl) return;
+
+    // If there is a top info area, subtract its height only when it is part of normal flow.
+    let topH = 0;
+    const topEl = document.getElementById("detail");
+    if (topEl) {
+      const pos = window.getComputedStyle(topEl).position;
+      if (pos !== "absolute" && pos !== "fixed" && pos !== "sticky") {
+        topH = topEl.getBoundingClientRect().height || 0;
+      }
+    }
+
+    const vh = window.innerHeight || 800;
+    const h = Math.max(320, Math.floor(vh - topH - 8));
+
+    mapEl.style.height = h + "px";
+    mapEl.style.minHeight = "320px";
+
+    // If map already exists, tell Leaflet to recalc size.
+    if (typeof map !== "undefined" && map && typeof map.invalidateSize === "function") {
+      map.invalidateSize();
+    }
+  } catch (_) {}
+}
+
+window.addEventListener("resize", () => {
+  applyResponsiveLayout();
+});
+
 // =============================
 // Iceland-only guard (Hard-Limit + Mask)
 // =============================
@@ -212,6 +249,21 @@ function initMap() {
     maxBounds: getIcelandBounds(),
     maxBoundsViscosity: 1.0,
   }).setView([startLat, startLon], MAP_DEFAULT_ZOOM);
+
+  // Make map large on mobile
+  applyResponsiveLayout();
+
+  // Ensure popup taps are not swallowed by the map on iOS
+  map.on("popupopen", (e) => {
+    try {
+      const el = e && e.popup && e.popup.getElement ? e.popup.getElement() : null;
+      if (!el) return;
+      if (L && L.DomEvent) {
+        L.DomEvent.disableClickPropagation(el);
+        L.DomEvent.disableScrollPropagation(el);
+      }
+    } catch (_) {}
+  });
 
   // Zusätzlich: nach jedem Move wieder "reinziehen" (für Touch/Browser-Eigenheiten)
   try {
@@ -1043,7 +1095,40 @@ function openInMaps(lat, lon, name = "") {
   }
 }
 
-// ensure global access for Leaflet popup inline onclick
+// iOS/Leaflet: Popups sometimes swallow taps. We route the "In Maps öffnen" action
+// through a delegated handler (capture phase) so it works reliably on iPhone + Android.
+let _mapsBtnLastTs = 0;
+function _mapsBtnHandle(ev) {
+  try {
+    const t = Date.now();
+    if (t - _mapsBtnLastTs < 700) return; // guard double-trigger (touch + click)
+    const target = ev && ev.target;
+    if (!target || !target.closest) return;
+    const btn = target.closest(".maps-btn");
+    if (!btn) return;
+
+    _mapsBtnLastTs = t;
+
+    if (ev.preventDefault) ev.preventDefault();
+    if (ev.stopPropagation) ev.stopPropagation();
+    if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+
+    const lat = btn.getAttribute("data-lat");
+    const lon = btn.getAttribute("data-lon");
+    const rawName = btn.getAttribute("data-name") || "";
+    let name = rawName;
+    try { name = JSON.parse(rawName); } catch (_) {}
+
+    openInMaps(lat, lon, name);
+  } catch (_) {}
+}
+
+document.addEventListener("click", _mapsBtnHandle, true);
+document.addEventListener("touchend", _mapsBtnHandle, { capture: true, passive: false });
+
+
+
+// openInMaps is used by the popup button handler onclick
 try { window.openInMaps = openInMaps; } catch (_) {}
 
 
@@ -1586,8 +1671,11 @@ function _spotPopupHTML(modeKey, spot) {
       ${tags}
       <div style="margin-top:10px;">
         <button type="button"
-          onclick="openInMaps(${spot.lat}, ${spot.lon}, ${JSON.stringify(spot.name || "")})"
-          style="padding:6px 10px; border-radius:10px; border:1px solid rgba(255,255,255,0.14); background:rgba(255,255,255,0.08); color:inherit; cursor:pointer;">
+          class="maps-btn"
+          data-lat="${spot.lat}"
+          data-lon="${spot.lon}"
+          data-name=${JSON.stringify(spot.name || "")}
+          style="padding:6px 10px; border-radius:10px; border:1px solid rgba(255,255,255,0.14); background:rgba(255,255,255,0.08); color:inherit; cursor:pointer; pointer-events:auto; touch-action:manipulation;">
           In Maps öffnen
         </button>
       </div>
