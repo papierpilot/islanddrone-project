@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#000000" />
+  <title>Drone Ampel · Island (Live)</title>
+
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+
+  <style>
+    :root { color-scheme: dark; }
+    body{
+      margin:0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      background:#000;
+      color:#fff;
+      padding:24px;
+    }
+    .wrap{ max-width:700px; margin:0 auto; }
+    .title{ font-size:22px; opacity:.9; margin-bottom:18px; }
+
+    .panel{
+      border-radius:24px;
+      padding:22px;
+      margin:18px 0;
+      border:1px solid rgba(255,255,255,.12);
+      background: rgba(255,255,255,.06);
+    }
+
+    .state{
+      font-size:44px;
+      font-weight:800;
+      letter-spacing:.5px;
+      margin:6px 0 4px;
+    }
+    .sub{ opacity:.85; line-height:1.35; }
+
+    .pill{
+      display:inline-block;
+      padding:8px 12px;
+      border-radius:999px;
+      border:1px solid rgba(255,255,255,.14);
+      background:rgba(255,255,255,.06);
+      margin-top:10px;
+      font-size:14px;
+      opacity:.9;
+    }
+
+    .grid{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap:12px;
+      margin-top:14px;
+    }
+
+    .field{
+      border-radius:16px;
+      border:1px solid rgba(255,255,255,.14);
+      background:rgba(255,255,255,.06);
+      padding:12px;
+    }
+    .label{ font-size:12px; opacity:.75; margin-bottom:8px; }
+
+    input[type="text"], input[type="number"], input[type="tel"], input[type="email"], input[type="password"], input[type="search"], input[type="url"], input[type="decimal"], input[type="date"], input[type="time"], input[type="datetime-local"], input[type="month"], input[type="week"]{
+      width:100%;
+      box-sizing:border-box;
+      padding:12px 12px;
+      border-radius:12px;
+      border:1px solid rgba(255,255,255,.18);
+      background:rgba(0,0,0,.25);
+      color:#fff;
+      font-size:16px;
+      outline:none;
+    }
+    input[type="range"]{ width:100%; }
+
+    .btnrow{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap:12px;
+      margin-top:12px;
+    }
+
+    button{
+      width:100%;
+      padding:14px 16px;
+      border-radius:16px;
+      border:1px solid rgba(255,255,255,.18);
+      background:rgba(255,255,255,.08);
+      color:#fff;
+      font-size:16px;
+      cursor:pointer;
+    }
+
+    .ok { color:#9ef29e; }
+    .no { color:#ff9b9b; }
+    .warn { color:#ffd59b; }
+    .info { color:#9bc8ff; } /* INFO ist Blau */
+
+    .small{
+      font-size:12px;
+      opacity:.7;
+      margin-top:10px;
+      line-height:1.35;
+    }
+
+    .always-note{
+      margin-top:14px;
+      padding:12px 14px;
+      border-radius:16px;
+      border:1px solid rgba(255,255,255,.12);
+      background: rgba(0,0,0,.22);
+      font-size:12px;
+      line-height:1.35;
+      opacity:.85;
+    }
+
+    .mapwrap{
+      margin-top:14px;
+      border-radius:18px;
+      overflow:hidden;
+      border:1px solid rgba(255,255,255,.12);
+      background:rgba(255,255,255,.04);
+    }
+    #map{ width:100%; height:280px; }
+
+    .leaflet-control-attribution{
+      background: rgba(0,0,0,.45) !important;
+      color: rgba(255,255,255,.75) !important;
+      border-radius: 10px !important;
+      padding: 2px 8px !important;
+    }
+    .leaflet-control-attribution a{ color: rgba(255,255,255,.85) !important; }
+
+    .toggleRow{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+      margin-top:12px;
+      padding:12px 14px;
+      border-radius:16px;
+      border:1px solid rgba(255,255,255,.12);
+      background: rgba(0,0,0,.20);
+    }
+    .toggleRow .tTitle{ font-size:14px; opacity:.9; }
+    .toggleRow .tSub{ font-size:12px; opacity:.65; margin-top:2px; }
+    .toggleRow .left{ display:flex; flex-direction:column; }
+    .toggleRow input{ transform: scale(1.2); }
+
+    @media (max-width: 560px){
+      .grid, .btnrow{ grid-template-columns: 1fr; }
+      #map{ height: 240px; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <div class="title">Drone Ampel · Island (Live)</div>
+
+    <div class="panel">
+      <div class="state warn" id="state">—</div>
+      <div class="sub" id="detail">Bereit.</div>
+
+      <div class="pill" id="mode">Modus: —</div>
+      <div class="pill" id="coords">Koordinaten: —</div>
+      <div class="pill" id="acc">Genauigkeit: —</div>
+      <div class="pill" id="zone">Zone: —</div>
+      <div class="pill" id="overlayPill">Overlay: aus</div>
+      <div class="pill" id="expertPill">Expertenmodus: aus</div>
+      <div class="pill">Quelle: WMS GetFeatureInfo</div>
+
+      <div class="mapwrap">
+        <div id="map"></div>
+      </div>
+
+      <div class="btnrow" style="margin-top:12px">
+        <button id="btnOverlayAvi">Aviation-Kontext anzeigen</button>
+        <button id="btnOverlayProt">Schutzgebiete anzeigen</button>
+      </div>
+
+      <div class="field" style="margin-top:12px">
+        <div class="label">Overlay-Deckkraft</div>
+        <input id="overlayOpacity" type="range" min="0" max="1" step="0.05" value="0.65" />
+      </div>
+
+      <div class="toggleRow">
+        <div class="left">
+          <div class="tTitle">Expertenmodus</div>
+          <div class="tSub">Ignoriert den 5-km Flughafen-Sicherheitsring und zeigt rein datengestützt.</div>
+        </div>
+        <input id="expertToggle" type="checkbox" />
+      </div>
+
+      <div class="grid">
+        <div class="field">
+          <div class="label">Latitude (Breite)</div>
+          <input id="lat" inputmode="decimal" placeholder="z.B. 64.2550" />
+        </div>
+        <div class="field">
+          <div class="label">Longitude (Länge)</div>
+          <input id="lon" inputmode="decimal" placeholder="z.B. -21.1290" />
+        </div>
+      </div>
+
+      <div class="btnrow">
+        <button id="btnManual">Koordinaten übernehmen & prüfen</button>
+        <button id="btnGps">GPS verwenden & prüfen</button>
+      </div>
+
+      <div class="always-note">
+        Diese App ist eine Orientierungshilfe auf Basis öffentlicher Geodaten. Sie kann unvollständig oder veraltet sein und ersetzt keine Vor-Ort-Prüfung.
+        Nachdenken ist Pflicht. Der Pilot bleibt für die Einhaltung aller Regeln verantwortlich und haftet auch bei Nutzung dieser App.
+      </div>
+
+      <div class="small">
+        Tipp: Für Island sind Longitudes meist <b>negativ</b> (westlich von Greenwich), z.B. Reykjavík ≈ <b>-21.9</b>.
+        Desktop-Ortung kann ungenau sein – zum Testen nutze manuelle Werte.
+      </div>
+
+      <div class="small">
+        Pro-Tipp: Klick in die Karte zeigt eine Detailabfrage (Aviation/Schutzgebiet) als Popup.
+      </div>
+    </div>
+
+    <button id="btn">Jetzt prüfen (aktueller Modus)</button>
+
+    <div class="small">
+      Für iPhone/Homescreen später: muss über HTTPS laufen.
+    </div>
+  </div>
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+
+  <script src="./app.js"></script>
+</body>
+</html>
