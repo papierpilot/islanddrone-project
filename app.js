@@ -1047,10 +1047,6 @@ updateExpertPill();
 updateOverlayPill();
 setState("warn", "—", "Bereit. Nutze GPS oder gib Koordinaten ein.");
 
-// Spot-Modus UI (Desktop & Handy identisch)
-try { spotsEnsureModeUI(); } catch (_) {}
-
-
 
 // =============================
 // WINDMODUL – Open-Meteo (frei) + DJI-Referenz (konservativ)
@@ -1239,160 +1235,36 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // =============================
-// FOTOGRAFISCHE SPOTS – Südküste (Reykjavík → Höfn)
-// Sichtbarkeit: erst ab bestimmtem Zoom, dezent als CircleMarker
+// SPOT-MODUS – Drohnen-Pilot vs Fotografisch wertvoll
+// Ziel: klare, gut sichtbare Marker und ein Umschalter wie am Handy/PC identisch.
+// Hinweis: Der Umschalter steuert nur die Spot-Ebene (keine Flugfreigabe).
 // =============================
 
 const SPOT_MIN_ZOOM = 0; // immer sichtbar (ohne Klick)
 
-// Spot-Modus: Drohnen-Pilot vs fotografisch wertvoll
-// (UI wird dynamisch ins Panel injiziert, damit Desktop & Handy identisch bleiben)
-let spotMode = "drone"; // "drone" | "photo"
-
-const SPOT_STYLES = {
+// Marker-Styles: fett, dunkel, klar trennbar vom Kartenmaterial
+const SPOT_STYLE = {
   drone: {
-    // dunkles, sattes Blau
-    radius: 8,
+    radius: 9,
     weight: 3,
     opacity: 0.98,
-    color: "rgba(10, 42, 102, 0.98)",
-    fillColor: "rgba(18, 59, 138, 0.85)",
-    fillOpacity: 0.9
+    color: "#062C78",      // dunkles, sattes Blau (Kontur)
+    fillColor: "#0B3D91",  // sattes Blau (Füllung)
+    fillOpacity: 0.92
   },
   photo: {
-    // dunkles, sattes Violett
-    radius: 8,
+    radius: 9,
     weight: 3,
     opacity: 0.98,
-    color: "rgba(59, 20, 95, 0.98)",
-    fillColor: "rgba(90, 29, 138, 0.85)",
-    fillOpacity: 0.9
+    color: "#3B0B6B",      // dunkles Violett (Kontur)
+    fillColor: "#5A189A",  // sattes Violett (Füllung)
+    fillOpacity: 0.92
   }
 };
 
-function spotsEnsureModeUI() {
-  if (document.getElementById("spotModeRow")) return;
-
-  const row = document.createElement("div");
-  row.id = "spotModeRow";
-  row.style.display = "flex";
-  row.style.alignItems = "center";
-  row.style.justifyContent = "space-between";
-  row.style.gap = "12px";
-  row.style.marginTop = "12px";
-  row.style.padding = "12px 14px";
-  row.style.borderRadius = "16px";
-  row.style.border = "1px solid rgba(255,255,255,0.12)";
-  row.style.background = "rgba(0,0,0,0.20)";
-
-  const left = document.createElement("div");
-  left.style.display = "flex";
-  left.style.flexDirection = "column";
-
-  const title = document.createElement("div");
-  title.style.fontSize = "14px";
-  title.style.opacity = "0.9";
-  title.textContent = "Spot-Modus";
-
-  const sub = document.createElement("div");
-  sub.style.fontSize = "12px";
-  sub.style.opacity = "0.65";
-  sub.style.marginTop = "2px";
-  sub.textContent = "Drohnen-Pilot (blau) oder fotografisch wertvoll (violett).";
-
-  left.appendChild(title);
-  left.appendChild(sub);
-
-  const right = document.createElement("div");
-  right.style.display = "flex";
-  right.style.gap = "8px";
-
-  const mkBtn = (id, label) => {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.id = id;
-    b.textContent = label;
-    b.style.width = "auto";
-    b.style.padding = "10px 12px";
-    b.style.borderRadius = "999px";
-    b.style.border = "1px solid rgba(255,255,255,0.18)";
-    b.style.background = "rgba(255,255,255,0.08)";
-    b.style.color = "#fff";
-    b.style.fontSize = "14px";
-    b.style.cursor = "pointer";
-    return b;
-  };
-
-  const bDrone = mkBtn("spotModeDrone", "Drohnen-Pilot");
-  const bPhoto = mkBtn("spotModePhoto", "Fotografisch wertvoll");
-
-  function paint() {
-    const activeBg = "rgba(255,255,255,0.16)";
-    const idleBg = "rgba(255,255,255,0.08)";
-    bDrone.style.background = (spotMode === "drone") ? activeBg : idleBg;
-    bPhoto.style.background = (spotMode === "photo") ? activeBg : idleBg;
-  }
-
-  bDrone.addEventListener("click", () => {
-    spotMode = "drone";
-    paint();
-    _rebuildPhotoSpotsLayer(); // nur Styling/Title, keine Logikänderung
-  });
-  bPhoto.addEventListener("click", () => {
-    spotMode = "photo";
-    paint();
-    _rebuildPhotoSpotsLayer();
-  });
-
-  right.appendChild(bDrone);
-  right.appendChild(bPhoto);
-  row.appendChild(left);
-  row.appendChild(right);
-
-  // Einhängen direkt unterhalb der Overlay-Deckkraft (oder nach Wind/Detail)
-  const anchor =
-    document.getElementById("overlayOpacity")?.parentNode ||
-    document.getElementById("windBox") ||
-    document.getElementById("detail") ||
-    document.getElementById("state") ||
-    document.body;
-
-  try {
-    if (anchor && anchor.parentNode) {
-      anchor.parentNode.insertBefore(row, anchor.nextSibling);
-    } else {
-      document.body.appendChild(row);
-    }
-  } catch (_) {
-    document.body.appendChild(row);
-  }
-
-  paint();
-}
-
-function _spotPopupTitle() {
-  return spotMode === "drone" ? "Drohnen-Spot" : "Fotografischer Spot";
-}
-
-function _spotPopupHint() {
-  return spotMode === "drone"
-    ? "Hinweis: Orientierung, keine Flugfreigabe. Recht/Wind bitte separat prüfen."
-    : "${_spotPopupHint()}";
-}
-
-function _rebuildPhotoSpotsLayer() {
-  // Layer neu aufbauen, damit Farbe/Title sofort stimmen (ohne sonstige Logik zu ändern)
-  try {
-    if (_photoSpotLayer) {
-      if (map && map.hasLayer(_photoSpotLayer)) map.removeLayer(_photoSpotLayer);
-      _photoSpotLayer = null;
-    }
-    _ensurePhotoSpots();
-    if (map && _photoSpotsOnMap) map.addLayer(_photoSpotLayer);
-  } catch (_) {}
-}
-
-
+// =============================
+// FOTO-SPOTS – Südküste (Reykjavík → Höfn)
+// =============================
 const PHOTO_SPOTS = [
   {
     id: "reykjanes_transition",
@@ -1462,62 +1334,185 @@ const PHOTO_SPOTS = [
   }
 ];
 
-let _photoSpotLayer = null;
-let _photoSpotsOnMap = false;
+// Falls es im Projekt eine eigene DRONE_SPOTS-Liste gibt, nutzen wir die.
+// Wenn nicht, fällt der Drohnen-Modus auf die Foto-Spots zurück (keine Spots erfunden).
+const DRONE_SPOTS_LIST = (typeof DRONE_SPOTS !== "undefined" && Array.isArray(DRONE_SPOTS)) ? DRONE_SPOTS : PHOTO_SPOTS;
 
-function _spotPopupHTML(spot) {
+// Leaflet layer state
+let _spotLayerDrone = null;
+let _spotLayerPhoto = null;
+let _spotsOnMap = false;
+let _spotMode = "drone"; // default: Drohnen-Pilot (wie zuvor üblich)
+
+function _spotPopupHTML(spot, kindLabel) {
   const safe = (s) => String(s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   return `
     <div style="font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial; max-width:260px">
-      <div style="font-weight:700; margin-bottom:4px;">${_spotPopupTitle()}</div>
-      <div style="opacity:.85; margin-bottom:6px;"><i>${safe(spot.cat)}</i></div>
-      <div style="line-height:1.35;">${safe(spot.text)}</div>
+      <div style="font-weight:800; margin-bottom:4px;">${safe(kindLabel)} Spot</div>
+      <div style="opacity:.85; margin-bottom:6px;"><i>${safe(spot.cat || "—")}</i></div>
+      <div style="line-height:1.35;">${safe(spot.text || "")}</div>
       <div style="margin-top:8px; font-size:12px; opacity:.7;">
-        ${_spotPopupHint()}
+        Hinweis: Inspiration, keine Flugfreigabe. Recht/Wind bitte separat prüfen.
       </div>
     </div>
   `;
 }
 
-function _ensurePhotoSpots() {
-  if (_photoSpotLayer) return;
+function _ensureSpotLayers() {
+  if (_spotLayerDrone && _spotLayerPhoto) return;
 
-  _photoSpotLayer = L.layerGroup();
+  _spotLayerDrone = L.layerGroup();
+  _spotLayerPhoto = L.layerGroup();
+
+  for (const s of DRONE_SPOTS_LIST) {
+    const st = SPOT_STYLE.drone;
+    const m = L.circleMarker([s.lat, s.lon], {
+      radius: st.radius,
+      weight: st.weight,
+      opacity: st.opacity,
+      color: st.color,
+      fillColor: st.fillColor,
+      fillOpacity: st.fillOpacity
+    });
+    m.bindPopup(_spotPopupHTML(s, "Drohnen"));
+    _spotLayerDrone.addLayer(m);
+  }
 
   for (const s of PHOTO_SPOTS) {
-    const m = L.circleMarker([s.lat, s.lon], SPOT_STYLES[spotMode] || SPOT_STYLES.photo);
-    m.bindPopup(_spotPopupHTML(s));
-    _photoSpotLayer.addLayer(m);
+    const st = SPOT_STYLE.photo;
+    const m = L.circleMarker([s.lat, s.lon], {
+      radius: st.radius,
+      weight: st.weight,
+      opacity: st.opacity,
+      color: st.color,
+      fillColor: st.fillColor,
+      fillOpacity: st.fillOpacity
+    });
+    m.bindPopup(_spotPopupHTML(s, "Foto"));
+    _spotLayerPhoto.addLayer(m);
   }
 }
 
-function _updatePhotoSpotVisibility() {
+function _applySpotMode(mode) {
+  _spotMode = (mode === "photo") ? "photo" : "drone";
+  try { localStorage.setItem("spotMode", _spotMode); } catch (_) {}
+
   if (!map) return;
-  _ensurePhotoSpots();
+  _ensureSpotLayers();
+
+  // remove both first
+  try { if (map.hasLayer(_spotLayerDrone)) map.removeLayer(_spotLayerDrone); } catch (_) {}
+  try { if (map.hasLayer(_spotLayerPhoto)) map.removeLayer(_spotLayerPhoto); } catch (_) {}
+
+  // add selected
+  if (_spotMode === "photo") _spotLayerPhoto.addTo(map);
+  else _spotLayerDrone.addTo(map);
+
+  _spotsOnMap = true;
+
+  // Update button visuals (if present)
+  const bDrone = document.getElementById("btnSpotDrone");
+  const bPhoto = document.getElementById("btnSpotPhoto");
+  if (bDrone && bPhoto) {
+    const on = "1px solid rgba(255,255,255,0.35)";
+    const off = "1px solid rgba(255,255,255,0.14)";
+    bDrone.style.border = (_spotMode === "drone") ? on : off;
+    bPhoto.style.border = (_spotMode === "photo") ? on : off;
+
+    bDrone.style.opacity = (_spotMode === "drone") ? "1" : "0.75";
+    bPhoto.style.opacity = (_spotMode === "photo") ? "1" : "0.75";
+  }
+}
+
+function _updateSpotVisibility() {
+  if (!map) return;
+  _ensureSpotLayers();
 
   const z = map.getZoom();
   const shouldShow = z >= SPOT_MIN_ZOOM;
 
-  if (shouldShow && !_photoSpotsOnMap) {
-    _photoSpotLayer.addTo(map);
-    _photoSpotsOnMap = true;
-  } else if (!shouldShow && _photoSpotsOnMap) {
-    map.removeLayer(_photoSpotLayer);
-    _photoSpotsOnMap = false;
+  if (!shouldShow && _spotsOnMap) {
+    try { if (map.hasLayer(_spotLayerDrone)) map.removeLayer(_spotLayerDrone); } catch (_) {}
+    try { if (map.hasLayer(_spotLayerPhoto)) map.removeLayer(_spotLayerPhoto); } catch (_) {}
+    _spotsOnMap = false;
+    return;
+  }
+
+  if (shouldShow && !_spotsOnMap) {
+    _applySpotMode(_spotMode);
   }
 }
 
-// Hook nach Map-Init
+function _ensureSpotModeToggleUI() {
+  // Toggle war in deinem Projekt sichtbar; wir hängen ihn robust ins Panel,
+  // ohne index.html anfassen zu müssen.
+  if (document.getElementById("spotModeBox")) return;
+
+  const panel = document.querySelector(".panel") || document.body;
+
+  const box = document.createElement("div");
+  box.id = "spotModeBox";
+  box.style.marginTop = "10px";
+  box.style.padding = "10px";
+  box.style.borderRadius = "10px";
+  box.style.border = "1px solid rgba(255,255,255,0.08)";
+  box.style.background = "rgba(0,0,0,0.18)";
+
+  box.innerHTML = `
+    <div style="display:flex; gap:10px; align-items:center; justify-content:space-between; flex-wrap:wrap;">
+      <div style="font-weight:800; opacity:.95;">Spot-Modus</div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button id="btnSpotDrone" style="padding:10px 12px; border-radius:12px; background: rgba(0,0,0,0.25); color:#fff; cursor:pointer;">
+          Drohnen-Pilot
+        </button>
+        <button id="btnSpotPhoto" style="padding:10px 12px; border-radius:12px; background: rgba(0,0,0,0.25); color:#fff; cursor:pointer;">
+          Fotografisch wertvoll
+        </button>
+      </div>
+    </div>
+    <div style="margin-top:6px; opacity:.7; font-size:12px; line-height:1.25;">
+      Blau = Drohnen-Spots · Violett = Foto-Spots
+    </div>
+  `;
+
+  // Einhängen: direkt nach der Windbox, falls vorhanden, sonst ans Ende des Panels
+  const windBox = document.getElementById("windBox");
+  if (windBox && windBox.parentNode) windBox.parentNode.insertBefore(box, windBox.nextSibling);
+  else panel.appendChild(box);
+
+  const bDrone = document.getElementById("btnSpotDrone");
+  const bPhoto = document.getElementById("btnSpotPhoto");
+  if (bDrone) bDrone.addEventListener("click", () => { _applySpotMode("drone"); });
+  if (bPhoto) bPhoto.addEventListener("click", () => { _applySpotMode("photo"); });
+
+  // Zustand initial aus LocalStorage
+  try {
+    const saved = localStorage.getItem("spotMode");
+    if (saved === "photo" || saved === "drone") _spotMode = saved;
+  } catch (_) {}
+
+  // UI sync
+  _applySpotMode(_spotMode);
+}
+
+// Hook nach Map-Init (robust, ohne Refactor)
 try {
-  _updatePhotoSpotVisibility();
-  map.on("zoomend", _updatePhotoSpotVisibility);
+  document.addEventListener("DOMContentLoaded", () => {
+    try { _ensureSpotModeToggleUI(); } catch (_) {}
+  });
+
+  // Falls DOMContentLoaded schon durch ist (z.B. Script am Ende), sofort versuchen:
+  try { _ensureSpotModeToggleUI(); } catch (_) {}
+
+  _updateSpotVisibility();
+  map.on("zoomend", _updateSpotVisibility);
 } catch (e) {
-  // falls map noch nicht existiert, später versuchen
   const _spotTimer = setInterval(() => {
     try {
       if (typeof map !== "undefined" && map && typeof map.getZoom === "function") {
-        _updatePhotoSpotVisibility();
-        map.on("zoomend", _updatePhotoSpotVisibility);
+        try { _ensureSpotModeToggleUI(); } catch (_) {}
+        _updateSpotVisibility();
+        map.on("zoomend", _updateSpotVisibility);
         clearInterval(_spotTimer);
       }
     } catch (_) {}
