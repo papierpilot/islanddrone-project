@@ -1,12 +1,13 @@
 // sw.js — Island Drone Project
-// Robust, simple cache-first shell + network fallback + cache bump
+// Robust, simple cache-first shell + network fallback
+// Cache-Version: v11
 
-const CACHE_NAME = "islanddrone-ampel-v9"; // <- bei Updates hochzählen!
+const CACHE_NAME = "islanddrone-ampel-v11"; // ← hochgezählt!
 
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./app.js",
+  "./app.js?v=10",
   "./manifest.webmanifest",
   "./splash.jpg",
   "./sw.js"
@@ -35,19 +36,17 @@ self.addEventListener("activate", (event) => {
 });
 
 // Fetch strategy:
-// - For navigation (index.html): network first, fallback cache
-// - For others: cache first, fallback network
+// - Navigation (index.html): network first
+// - Assets: cache first
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   const url = new URL(req.url);
 
-  // Only handle same-origin requests (your GitHub Pages site)
   if (url.origin !== self.location.origin) return;
 
-  // Always try fresh index.html so updates arrive
   const isNavigation =
     req.mode === "navigate" ||
-    (req.destination === "document") ||
+    req.destination === "document" ||
     url.pathname.endsWith("/") ||
     url.pathname.endsWith("/index.html");
 
@@ -56,7 +55,9 @@ self.addEventListener("fetch", (event) => {
       fetch(req)
         .then((res) => {
           const copy = res.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put("./index.html", copy));
+          caches.open(CACHE_NAME).then((cache) =>
+            cache.put("./index.html", copy)
+          );
           return res;
         })
         .catch(() => caches.match("./index.html"))
@@ -67,8 +68,8 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(
     caches.match(req).then((cached) => {
       if (cached) return cached;
+
       return fetch(req).then((res) => {
-        // Cache successful basic responses
         if (res && res.ok && res.type === "basic") {
           const copy = res.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
