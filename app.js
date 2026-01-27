@@ -1333,14 +1333,30 @@ function _ensurePhotoSpots() {
   _photoSpotLayer = L.layerGroup();
 
   for (const s of PHOTO_SPOTS) {
-    const m = L.circleMarker([s.lat, s.lon], {
-      radius: 7,
-      weight: 2,
-      opacity: 0.95,
-      color: "rgba(255, 230, 170, 0.95)",
-      fillColor: "rgba(255, 210, 120, 0.45)",
-      fillOpacity: 0.6
-    });
+    // Spot-Typen (abwärtskompatibel):
+    // - "drone" (Drohnen-Spot) -> dunkles, sattes Blau
+    // - sonst -> dunkles, sattes Violett (Fotografie)
+    const _tRaw = (s.type || s.kind || s.mode || "").toString().toLowerCase();
+    const _isDrone = _tRaw.includes("drone") || _tRaw.includes("uav") || _tRaw.includes("drohne");
+    const _style = _isDrone
+      ? {
+          radius: 9,
+          weight: 3,
+          opacity: 0.98,
+          color: "#0A2A66",
+          fillColor: "#123B8A",
+          fillOpacity: 0.88
+        }
+      : {
+          radius: 9,
+          weight: 3,
+          opacity: 0.98,
+          color: "#3B145F",
+          fillColor: "#5A1D8A",
+          fillOpacity: 0.88
+        };
+
+    const m = L.circleMarker([s.lat, s.lon], _style);
     m.bindPopup(_spotPopupHTML(s));
     _photoSpotLayer.addLayer(m);
   }
