@@ -1047,6 +1047,10 @@ updateExpertPill();
 updateOverlayPill();
 setState("warn", "—", "Bereit. Nutze GPS oder gib Koordinaten ein.");
 
+// Spot-Modus UI (Desktop & Handy identisch)
+try { spotsEnsureModeUI(); } catch (_) {}
+
+
 
 // =============================
 // WINDMODUL – Open-Meteo (frei) + DJI-Referenz (konservativ)
@@ -1241,6 +1245,154 @@ document.addEventListener("DOMContentLoaded", () => {
 
 const SPOT_MIN_ZOOM = 0; // immer sichtbar (ohne Klick)
 
+// Spot-Modus: Drohnen-Pilot vs fotografisch wertvoll
+// (UI wird dynamisch ins Panel injiziert, damit Desktop & Handy identisch bleiben)
+let spotMode = "drone"; // "drone" | "photo"
+
+const SPOT_STYLES = {
+  drone: {
+    // dunkles, sattes Blau
+    radius: 8,
+    weight: 3,
+    opacity: 0.98,
+    color: "rgba(10, 42, 102, 0.98)",
+    fillColor: "rgba(18, 59, 138, 0.85)",
+    fillOpacity: 0.9
+  },
+  photo: {
+    // dunkles, sattes Violett
+    radius: 8,
+    weight: 3,
+    opacity: 0.98,
+    color: "rgba(59, 20, 95, 0.98)",
+    fillColor: "rgba(90, 29, 138, 0.85)",
+    fillOpacity: 0.9
+  }
+};
+
+function spotsEnsureModeUI() {
+  if (document.getElementById("spotModeRow")) return;
+
+  const row = document.createElement("div");
+  row.id = "spotModeRow";
+  row.style.display = "flex";
+  row.style.alignItems = "center";
+  row.style.justifyContent = "space-between";
+  row.style.gap = "12px";
+  row.style.marginTop = "12px";
+  row.style.padding = "12px 14px";
+  row.style.borderRadius = "16px";
+  row.style.border = "1px solid rgba(255,255,255,0.12)";
+  row.style.background = "rgba(0,0,0,0.20)";
+
+  const left = document.createElement("div");
+  left.style.display = "flex";
+  left.style.flexDirection = "column";
+
+  const title = document.createElement("div");
+  title.style.fontSize = "14px";
+  title.style.opacity = "0.9";
+  title.textContent = "Spot-Modus";
+
+  const sub = document.createElement("div");
+  sub.style.fontSize = "12px";
+  sub.style.opacity = "0.65";
+  sub.style.marginTop = "2px";
+  sub.textContent = "Drohnen-Pilot (blau) oder fotografisch wertvoll (violett).";
+
+  left.appendChild(title);
+  left.appendChild(sub);
+
+  const right = document.createElement("div");
+  right.style.display = "flex";
+  right.style.gap = "8px";
+
+  const mkBtn = (id, label) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.id = id;
+    b.textContent = label;
+    b.style.width = "auto";
+    b.style.padding = "10px 12px";
+    b.style.borderRadius = "999px";
+    b.style.border = "1px solid rgba(255,255,255,0.18)";
+    b.style.background = "rgba(255,255,255,0.08)";
+    b.style.color = "#fff";
+    b.style.fontSize = "14px";
+    b.style.cursor = "pointer";
+    return b;
+  };
+
+  const bDrone = mkBtn("spotModeDrone", "Drohnen-Pilot");
+  const bPhoto = mkBtn("spotModePhoto", "Fotografisch wertvoll");
+
+  function paint() {
+    const activeBg = "rgba(255,255,255,0.16)";
+    const idleBg = "rgba(255,255,255,0.08)";
+    bDrone.style.background = (spotMode === "drone") ? activeBg : idleBg;
+    bPhoto.style.background = (spotMode === "photo") ? activeBg : idleBg;
+  }
+
+  bDrone.addEventListener("click", () => {
+    spotMode = "drone";
+    paint();
+    _rebuildPhotoSpotsLayer(); // nur Styling/Title, keine Logikänderung
+  });
+  bPhoto.addEventListener("click", () => {
+    spotMode = "photo";
+    paint();
+    _rebuildPhotoSpotsLayer();
+  });
+
+  right.appendChild(bDrone);
+  right.appendChild(bPhoto);
+  row.appendChild(left);
+  row.appendChild(right);
+
+  // Einhängen direkt unterhalb der Overlay-Deckkraft (oder nach Wind/Detail)
+  const anchor =
+    document.getElementById("overlayOpacity")?.parentNode ||
+    document.getElementById("windBox") ||
+    document.getElementById("detail") ||
+    document.getElementById("state") ||
+    document.body;
+
+  try {
+    if (anchor && anchor.parentNode) {
+      anchor.parentNode.insertBefore(row, anchor.nextSibling);
+    } else {
+      document.body.appendChild(row);
+    }
+  } catch (_) {
+    document.body.appendChild(row);
+  }
+
+  paint();
+}
+
+function _spotPopupTitle() {
+  return spotMode === "drone" ? "Drohnen-Spot" : "Fotografischer Spot";
+}
+
+function _spotPopupHint() {
+  return spotMode === "drone"
+    ? "Hinweis: Orientierung, keine Flugfreigabe. Recht/Wind bitte separat prüfen."
+    : "${_spotPopupHint()}";
+}
+
+function _rebuildPhotoSpotsLayer() {
+  // Layer neu aufbauen, damit Farbe/Title sofort stimmen (ohne sonstige Logik zu ändern)
+  try {
+    if (_photoSpotLayer) {
+      if (map && map.hasLayer(_photoSpotLayer)) map.removeLayer(_photoSpotLayer);
+      _photoSpotLayer = null;
+    }
+    _ensurePhotoSpots();
+    if (map && _photoSpotsOnMap) map.addLayer(_photoSpotLayer);
+  } catch (_) {}
+}
+
+
 const PHOTO_SPOTS = [
   {
     id: "reykjanes_transition",
@@ -1317,11 +1469,11 @@ function _spotPopupHTML(spot) {
   const safe = (s) => String(s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   return `
     <div style="font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial; max-width:260px">
-      <div style="font-weight:700; margin-bottom:4px;">Fotografischer Spot</div>
+      <div style="font-weight:700; margin-bottom:4px;">${_spotPopupTitle()}</div>
       <div style="opacity:.85; margin-bottom:6px;"><i>${safe(spot.cat)}</i></div>
       <div style="line-height:1.35;">${safe(spot.text)}</div>
       <div style="margin-top:8px; font-size:12px; opacity:.7;">
-        Hinweis: Inspiration, keine Flugfreigabe. Recht/Wind bitte separat prüfen.
+        ${_spotPopupHint()}
       </div>
     </div>
   `;
@@ -1333,30 +1485,7 @@ function _ensurePhotoSpots() {
   _photoSpotLayer = L.layerGroup();
 
   for (const s of PHOTO_SPOTS) {
-    // Spot-Typen (abwärtskompatibel):
-    // - "drone" (Drohnen-Spot) -> dunkles, sattes Blau
-    // - sonst -> dunkles, sattes Violett (Fotografie)
-    const _tRaw = (s.type || s.kind || s.mode || "").toString().toLowerCase();
-    const _isDrone = _tRaw.includes("drone") || _tRaw.includes("uav") || _tRaw.includes("drohne");
-    const _style = _isDrone
-      ? {
-          radius: 9,
-          weight: 3,
-          opacity: 0.98,
-          color: "#0A2A66",
-          fillColor: "#123B8A",
-          fillOpacity: 0.88
-        }
-      : {
-          radius: 9,
-          weight: 3,
-          opacity: 0.98,
-          color: "#3B145F",
-          fillColor: "#5A1D8A",
-          fillOpacity: 0.88
-        };
-
-    const m = L.circleMarker([s.lat, s.lon], _style);
+    const m = L.circleMarker([s.lat, s.lon], SPOT_STYLES[spotMode] || SPOT_STYLES.photo);
     m.bindPopup(_spotPopupHTML(s));
     _photoSpotLayer.addLayer(m);
   }
