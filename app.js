@@ -1126,6 +1126,81 @@ function _mapsBtnHandle(ev) {
 document.addEventListener("click", _mapsBtnHandle, true);
 document.addEventListener("touchend", _mapsBtnHandle, { capture: true, passive: false });
 
+// =============================
+// Copy-to-Clipboard (Spot Koordinaten)
+// - bewusst neutral: nur Koordinaten, keine Navigation
+// - iOS-safe: delegated handler + clipboard fallback
+// =============================
+function _copyTextToClipboard(text) {
+  const t = String(text || "").trim();
+  if (!t) return Promise.reject(new Error("empty"));
+
+  // Modern API
+  try {
+    if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      return navigator.clipboard.writeText(t);
+    }
+  } catch (_) {}
+
+  // Fallback (iOS/older browsers)
+  return new Promise((resolve, reject) => {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = t;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      ta.style.left = "-1000px";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, ta.value.length);
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      ok ? resolve() : reject(new Error("execCommand failed"));
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+let _copyBtnLastTs = 0;
+function _copyBtnHandle(ev) {
+  try {
+    const t = Date.now();
+    if (t - _copyBtnLastTs < 700) return; // guard double-trigger (touch + click)
+    const target = ev && ev.target;
+    if (!target || !target.closest) return;
+    const btn = target.closest(".copy-btn");
+    if (!btn) return;
+
+    _copyBtnLastTs = t;
+
+    if (ev.preventDefault) ev.preventDefault();
+    if (ev.stopPropagation) ev.stopPropagation();
+    if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+
+    const coords = btn.getAttribute("data-coords") || "";
+    const before = btn.textContent;
+    _copyTextToClipboard(coords).then(() => {
+      try {
+        btn.textContent = "Kopiert ✓";
+        setTimeout(() => { try { btn.textContent = before; } catch (_) {} }, 1200);
+      } catch (_) {}
+    }).catch(() => {
+      // leise bleiben – kein Popup-Spam
+      try {
+        btn.textContent = "Nicht kopiert";
+        setTimeout(() => { try { btn.textContent = before; } catch (_) {} }, 1200);
+      } catch (_) {}
+    });
+  } catch (_) {}
+}
+
+document.addEventListener("click", _copyBtnHandle, true);
+document.addEventListener("touchend", _copyBtnHandle, { capture: true, passive: false });
+
+
 
 
 // openInMaps is used by the popup button handler onclick
@@ -1669,14 +1744,21 @@ function _spotPopupHTML(modeKey, spot) {
       ${short}
       ${long}
       ${tags}
-      <div style="margin-top:10px;">
+      <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
         <button type="button"
           class="maps-btn"
           data-lat="${spot.lat}"
           data-lon="${spot.lon}"
           data-name=${JSON.stringify(spot.name || "")}
           style="padding:6px 10px; border-radius:10px; border:1px solid rgba(255,255,255,0.14); background:rgba(255,255,255,0.08); color:inherit; cursor:pointer; pointer-events:auto; touch-action:manipulation;">
-          In Maps öffnen
+          In Karten öffnen
+        </button>
+
+        <button type="button"
+          class="copy-btn"
+          data-coords="${_spotFmt(spot.lat)}, ${_spotFmt(spot.lon)}"
+          style="padding:6px 10px; border-radius:10px; border:1px solid rgba(255,255,255,0.14); background:rgba(255,255,255,0.06); color:inherit; cursor:pointer; pointer-events:auto; touch-action:manipulation;">
+          Koordinaten kopieren
         </button>
       </div>
       <div style="margin-top:10px; font-size:12px; opacity:.7;">${_spotSafe(hint)}</div>
