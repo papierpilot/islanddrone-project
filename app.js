@@ -1966,12 +1966,13 @@ try {
 
 
 // =============================
-// FLOATING ACTIONS – Koordinaten-Übergabe (immer verfügbar)
+// MAP ACTIONS – Koordinaten-Übergabe (immer verfügbar, unter der Karte)
 // - Keine Navigation in der App. Nur Übergabe an Karten-/Navi-App oder Copy.
+// - iOS-safe: eigene Buttons im DOM, keine Leaflet-Popup-Abhängigkeit
 // =============================
-(function installFloatingActions(){
-  const DOCK_ID = "fabDock";
-  const TOAST_ID = "fabToast";
+(function installMapHandoffButtons(){
+  const BAR_ID = "coordHandoffBar";
+  const MSG_ID = "coordHandoffMsg";
 
   function _fmt6(x){
     const n = Number(x);
@@ -1991,8 +1992,8 @@ try {
     // Fallback: Inputs
     try {
       if (typeof latInput !== "undefined" && typeof lonInput !== "undefined" && latInput && lonInput) {
-        const lat = Number(String(latInput.value || "").replace(",", "."));
-        const lon = Number(String(lonInput.value || "").replace(",", "."));
+        const lat = Number(String(latInput.value || "").trim());
+        const lon = Number(String(lonInput.value || "").trim());
         if (Number.isFinite(lat) && Number.isFinite(lon)) return { lat, lon };
       }
     } catch (_) {}
@@ -2000,158 +2001,122 @@ try {
     return null;
   }
 
-  function _toast(msg){
-    try {
-      const t = document.getElementById(TOAST_ID);
-      if (!t) return;
-      t.textContent = String(msg || "");
-      t.style.opacity = "1";
-      clearTimeout(_toast._timer);
-      _toast._timer = setTimeout(() => { try { t.style.opacity = "0"; } catch(_){} }, 1400);
-    } catch (_) {}
-  }
+  function _ensureBar(){
+    if (document.getElementById(BAR_ID)) return;
 
-  async function _copyText(text){
-    const s = String(text || "");
-    if (!s) return false;
+    const bar = document.createElement("div");
+    bar.id = BAR_ID;
+    bar.style.display = "flex";
+    bar.style.gap = "10px";
+    bar.style.flexWrap = "wrap";
+    bar.style.alignItems = "center";
+    bar.style.margin = "10px 0 8px 0";
 
-    // Modern API
-    try {
-      if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
-        await navigator.clipboard.writeText(s);
-        return true;
-      }
-    } catch (_) {}
+    const btnMaps = document.createElement("button");
+    btnMaps.type = "button";
+    btnMaps.textContent = "In Karten öffnen";
+    btnMaps.style.padding = "8px 12px";
+    btnMaps.style.borderRadius = "12px";
+    btnMaps.style.border = "1px solid rgba(255,255,255,0.14)";
+    btnMaps.style.background = "rgba(255,255,255,0.08)";
+    btnMaps.style.color = "inherit";
+    btnMaps.style.cursor = "pointer";
 
-    // Fallback
-    try {
-      const ta = document.createElement("textarea");
-      ta.value = s;
-      ta.setAttribute("readonly", "");
-      ta.style.position = "fixed";
-      ta.style.left = "-9999px";
-      ta.style.top = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      const ok = document.execCommand("copy");
-      document.body.removeChild(ta);
-      return !!ok;
-    } catch (_) {}
+    const btnCopy = document.createElement("button");
+    btnCopy.type = "button";
+    btnCopy.textContent = "Koordinaten kopieren";
+    btnCopy.style.padding = "8px 12px";
+    btnCopy.style.borderRadius = "12px";
+    btnCopy.style.border = "1px solid rgba(255,255,255,0.14)";
+    btnCopy.style.background = "rgba(255,255,255,0.06)";
+    btnCopy.style.color = "inherit";
+    btnCopy.style.cursor = "pointer";
 
-    return false;
-  }
+    const msg = document.createElement("span");
+    msg.id = MSG_ID;
+    msg.style.fontSize = "12px";
+    msg.style.opacity = "0.75";
+    msg.style.marginLeft = "2px";
+    msg.textContent = "";
 
-  function ensureDock(){
-    if (document.getElementById(DOCK_ID)) return;
+    function _flash(text){
+      try {
+        msg.textContent = text;
+        msg.style.opacity = "0.85";
+        window.clearTimeout(msg._t);
+        msg._t = window.setTimeout(() => {
+          msg.textContent = "";
+          msg.style.opacity = "0.75";
+        }, 1600);
+      } catch (_) {}
+    }
 
-    const dock = document.createElement("div");
-    dock.id = DOCK_ID;
+    // Click handlers
+    let _lastTs = 0;
+    function _guardTs(){
+      const t = Date.now();
+      if (t - _lastTs < 600) return false;
+      _lastTs = t;
+      return true;
+    }
 
-    // Position: unten rechts, über der Karte (safe area)
-    dock.style.position = "fixed";
-    dock.style.right = "14px";
-    dock.style.bottom = "14px";
-    dock.style.zIndex = "9999";
-    dock.style.display = "flex";
-    dock.style.flexDirection = "column";
-    dock.style.gap = "10px";
-    dock.style.pointerEvents = "none"; // nur Buttons clickable
-    dock.style.paddingBottom = "env(safe-area-inset-bottom)";
-    dock.style.paddingRight = "env(safe-area-inset-right)";
-
-    const mkBtn = (id, label, icon) => {
-      const b = document.createElement("button");
-      b.id = id;
-      b.type = "button";
-      b.setAttribute("aria-label", label);
-      b.style.pointerEvents = "auto";
-      b.style.border = "1px solid rgba(255,255,255,0.14)";
-      b.style.background = "rgba(0,0,0,0.68)";
-      b.style.backdropFilter = "blur(6px)";
-      b.style.webkitBackdropFilter = "blur(6px)";
-      b.style.color = "inherit";
-      b.style.borderRadius = "14px";
-      b.style.padding = "10px 12px";
-      b.style.font = "600 13px system-ui, -apple-system, Segoe UI, Roboto, Arial";
-      b.style.boxShadow = "0 8px 22px rgba(0,0,0,0.35)";
-      b.style.cursor = "pointer";
-      b.style.userSelect = "none";
-      b.style.display = "inline-flex";
-      b.style.alignItems = "center";
-      b.style.gap = "8px";
-      b.style.maxWidth = "260px";
-      b.style.whiteSpace = "nowrap";
-      b.style.opacity = "0.98";
-      b.innerHTML = `<span style="font-size:16px; line-height:1;">${icon}</span><span>${label}</span>`;
-      b.addEventListener("mouseenter", () => { try { b.style.opacity = "1"; } catch(_){} });
-      b.addEventListener("mouseleave", () => { try { b.style.opacity = "0.98"; } catch(_){} });
-      return b;
-    };
-
-    const btnMaps = mkBtn("fabMaps", "In Karten öffnen", "📍");
-    const btnCopy = mkBtn("fabCopy", "Koordinaten kopieren", "📋");
-
-    const toast = document.createElement("div");
-    toast.id = TOAST_ID;
-    toast.style.pointerEvents = "none";
-    toast.style.alignSelf = "flex-end";
-    toast.style.padding = "6px 10px";
-    toast.style.borderRadius = "10px";
-    toast.style.background = "rgba(0,0,0,0.62)";
-    toast.style.border = "1px solid rgba(255,255,255,0.10)";
-    toast.style.font = "600 12px system-ui, -apple-system, Segoe UI, Roboto, Arial";
-    toast.style.opacity = "0";
-    toast.style.transition = "opacity 220ms ease";
-
-    dock.appendChild(btnMaps);
-    dock.appendChild(btnCopy);
-    dock.appendChild(toast);
-
-    document.body.appendChild(dock);
-
-    // Handlers
     btnMaps.addEventListener("click", (ev) => {
-      try {
-        if (ev) { ev.preventDefault?.(); ev.stopPropagation?.(); }
-        const c = _getCurrentCoords();
-        if (!c) { _toast("Keine Koordinaten."); return; }
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (!_guardTs()) return;
+      const c = _getCurrentCoords();
+      if (!c) return _flash("Keine Koordinaten.");
+      try { openInMaps(c.lat, c.lon, ""); } catch (_) {}
+    }, { passive: false });
 
-        // Spot-Name optional als Label (rein kosmetisch)
-        let label = "";
-        try {
-          label = (typeof _selectedSpotName === "string" && _selectedSpotName) ? _selectedSpotName : "";
-        } catch (_) {}
+    btnCopy.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (!_guardTs()) return;
+      const c = _getCurrentCoords();
+      if (!c) return _flash("Keine Koordinaten.");
+      const txt = `${_fmt6(c.lat)}, ${_fmt6(c.lon)}`;
+      _copyTextToClipboard(txt)
+        .then(() => _flash("Kopiert."))
+        .catch(() => _flash("Kopieren nicht möglich."));
+    }, { passive: false });
 
-        openInMaps(c.lat, c.lon, label);
-      } catch (_) {
-        _toast("Karten-App konnte nicht geöffnet werden.");
+    bar.appendChild(btnMaps);
+    bar.appendChild(btnCopy);
+    bar.appendChild(msg);
+
+    // Insert location: directly above the "Aviation Kontext anzeigen" button if present
+    let inserted = false;
+    try {
+      const buttons = Array.from(document.querySelectorAll("button"));
+      const aviBtn = buttons.find(b => (b.textContent || "").trim().toLowerCase().startsWith("aviation kontext"));
+      if (aviBtn && aviBtn.parentNode) {
+        aviBtn.parentNode.insertBefore(bar, aviBtn);
+        inserted = true;
       }
-    });
+    } catch (_) {}
 
-    btnCopy.addEventListener("click", async (ev) => {
+    if (!inserted) {
       try {
-        if (ev) { ev.preventDefault?.(); ev.stopPropagation?.(); }
-        const c = _getCurrentCoords();
-        if (!c) { _toast("Keine Koordinaten."); return; }
+        const mapEl = document.getElementById("map");
+        if (mapEl && mapEl.parentNode) {
+          // Put directly after map container
+          if (mapEl.nextSibling) mapEl.parentNode.insertBefore(bar, mapEl.nextSibling);
+          else mapEl.parentNode.appendChild(bar);
+          inserted = true;
+        }
+      } catch (_) {}
+    }
 
-        const base = `${_fmt6(c.lat)}, ${_fmt6(c.lon)}`;
-        let label = "";
-        try {
-          label = (typeof _selectedSpotName === "string" && _selectedSpotName) ? ` — ${_selectedSpotName}` : "";
-        } catch (_) {}
-
-        const ok = await _copyText(base);
-        _toast(ok ? ("Kopiert: " + base) : ("Nicht kopiert: " + base));
-      } catch (_) {
-        _toast("Kopieren fehlgeschlagen.");
-      }
-    });
+    if (!inserted) {
+      try { document.body.appendChild(bar); } catch (_) {}
+    }
   }
 
-  // Install when DOM is there (and also after load, safe)
+  // Wait for DOM
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", ensureDock);
+    document.addEventListener("DOMContentLoaded", _ensureBar, { once: true });
   } else {
-    ensureDock();
+    _ensureBar();
   }
 })();
