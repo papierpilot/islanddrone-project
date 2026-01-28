@@ -25,6 +25,43 @@ const PROXY = "";
 // Map defaults
 const MAP_DEFAULT_ZOOM = 10;
 
+
+
+// =============================
+// Layout: make map as large as possible (esp. on mobile)
+// =============================
+function applyResponsiveLayout() {
+  try {
+    const mapEl = document.getElementById("map");
+    if (!mapEl) return;
+
+    // If there is a top info area, subtract its height only when it is part of normal flow.
+    let topH = 0;
+    const topEl = document.getElementById("detail");
+    if (topEl) {
+      const pos = window.getComputedStyle(topEl).position;
+      if (pos !== "absolute" && pos !== "fixed" && pos !== "sticky") {
+        topH = topEl.getBoundingClientRect().height || 0;
+      }
+    }
+
+    const vh = window.innerHeight || 800;
+    const h = Math.max(320, Math.floor(vh - topH - 8));
+
+    mapEl.style.height = h + "px";
+    mapEl.style.minHeight = "320px";
+
+    // If map already exists, tell Leaflet to recalc size.
+    if (typeof map !== "undefined" && map && typeof map.invalidateSize === "function") {
+      map.invalidateSize();
+    }
+  } catch (_) {}
+}
+
+window.addEventListener("resize", () => {
+  applyResponsiveLayout();
+});
+
 // =============================
 // Iceland-only guard (Hard-Limit + Mask)
 // =============================
@@ -110,6 +147,11 @@ let currentMode = "gps"; // "gps" oder "manual"
 let manualCoords = null;
 let expertMode = false;
 
+// Spot-Name (für Anfängerfreundlichkeit)
+let _selectedSpotName = "";
+function _setSelectedSpotName(name) { _selectedSpotName = (name || "").trim(); }
+function _clearSelectedSpotName() { _selectedSpotName = ""; }
+
 // =============================
 // Leaflet state
 // =============================
@@ -162,7 +204,10 @@ function setInputs(lat, lon) {
 }
 
 function updatePills(lat, lon, accuracyText = "—") {
-  if (coordsEl) coordsEl.textContent = `Koordinaten: ${fmt(lat)}, ${fmt(lon)}`;
+  if (coordsEl) {
+    const spot = (typeof _selectedSpotName === "string" && _selectedSpotName) ? ` — Spot: ${_selectedSpotName}` : "";
+    coordsEl.textContent = `Koordinaten: ${fmt(lat)}, ${fmt(lon)}${spot}`;
+  }
   if (accEl) accEl.textContent = `Genauigkeit: ${accuracyText}`;
 }
 
@@ -204,6 +249,21 @@ function initMap() {
     maxBounds: getIcelandBounds(),
     maxBoundsViscosity: 1.0,
   }).setView([startLat, startLon], MAP_DEFAULT_ZOOM);
+
+  // Make map large on mobile
+  applyResponsiveLayout();
+
+  // Ensure popup taps are not swallowed by the map on iOS
+  map.on("popupopen", (e) => {
+    try {
+      const el = e && e.popup && e.popup.getElement ? e.popup.getElement() : null;
+      if (!el) return;
+      if (L && L.DomEvent) {
+        L.DomEvent.disableClickPropagation(el);
+        L.DomEvent.disableScrollPropagation(el);
+      }
+    } catch (_) {}
+  });
 
   // Zusätzlich: nach jedem Move wieder "reinziehen" (für Touch/Browser-Eigenheiten)
   try {
@@ -260,6 +320,7 @@ function initMap() {
   }).addTo(map);
 
   marker.on("drag", () => {
+    try { _clearSelectedSpotName(); } catch (_) {}
     const p0 = marker.getLatLng();
     let lat = p0.lat;
     let lon = p0.lng;
@@ -283,6 +344,7 @@ function initMap() {
   });
 
   marker.on("dragend", async () => {
+    try { _clearSelectedSpotName(); } catch (_) {}
     const p0 = marker.getLatLng();
     let lat = p0.lat;
     let lon = p0.lng;
@@ -902,6 +964,7 @@ async function runDetailQuery(lat, lon) {
 // GPS / Manual
 // =============================
 async function checkGps() {
+  try { _clearSelectedSpotName(); } catch (_) {}
   if (!navigator.geolocation) {
     setState("warn", "—", "GPS nicht verfügbar.");
     return;
@@ -936,6 +999,7 @@ function parseManualInputs() {
 }
 
 async function checkManual() {
+  try { _clearSelectedSpotName(); } catch (_) {}
   setMode("manual");
   try {
     manualCoords = parseManualInputs();
@@ -1010,6 +1074,63 @@ function escapeHtml(s) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 }
+
+// =============================
+// Maps handoff (optional)
+// - Opens a coordinate in the user's maps app (usually Google Maps; falls back to browser)
+// - No routing, no navigation logic inside this app
+// =============================
+function openInMaps(lat, lon, name = "") {
+  const n = Number(lat);
+  const e = Number(lon);
+  if (!Number.isFinite(n) || !Number.isFinite(e)) return;
+
+  const label = String(name || "").trim();
+  // Universal: works on iOS + Android, opens installed app when available
+  const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${n},${e}${label ? ` (${label})` : ""}`)}`;
+  try {
+    window.open(url, "_blank", "noopener,noreferrer");
+  } catch (_) {
+    window.location.href = url;
+  }
+}
+
+// iOS/Leaflet: Popups sometimes swallow taps. We route the "In Maps öffnen" action
+// through a delegated handler (capture phase) so it works reliably on iPhone + Android.
+let _mapsBtnLastTs = 0;
+function _mapsBtnHandle(ev) {
+  try {
+    const t = Date.now();
+    if (t - _mapsBtnLastTs < 700) return; // guard double-trigger (touch + click)
+    const target = ev && ev.target;
+    if (!target || !target.closest) return;
+    const btn = target.closest(".maps-btn");
+    if (!btn) return;
+
+    _mapsBtnLastTs = t;
+
+    if (ev.preventDefault) ev.preventDefault();
+    if (ev.stopPropagation) ev.stopPropagation();
+    if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+
+    const lat = btn.getAttribute("data-lat");
+    const lon = btn.getAttribute("data-lon");
+    const rawName = btn.getAttribute("data-name") || "";
+    let name = rawName;
+    try { name = JSON.parse(rawName); } catch (_) {}
+
+    openInMaps(lat, lon, name);
+  } catch (_) {}
+}
+
+document.addEventListener("click", _mapsBtnHandle, true);
+document.addEventListener("touchend", _mapsBtnHandle, { capture: true, passive: false });
+
+
+
+// openInMaps is used by the popup button handler onclick
+try { window.openInMaps = openInMaps; } catch (_) {}
+
 
 // =============================
 // Wire buttons (safe)
@@ -1235,193 +1356,494 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // =============================
-// SPOT-MODUS – Drohnen-Pilot vs Fotografisch wertvoll
-// Ziel: klare, gut sichtbare Marker und ein Umschalter wie am Handy/PC identisch.
-// Hinweis: Der Umschalter steuert nur die Spot-Ebene (keine Flugfreigabe).
+// SPOT-LAYER – 2 Modi (Piloten first)
+// 1) Drohnen-Spots (Default): Luftbildpotenzial, keine Aussage zur Flugerlaubnis
+// 2) Fotografisch wertvoll: Klassiker & Orientierung, ohne Drohnenbezug
+// - keine Navigation / kein Routing / keine Google-Dienste
+// - jeder Spot: Text + saubere Decimal-Koordinaten
+//
+// Datenhygiene:
+// - einheitliches Modell: { id, name, category, lat, lon, short, long, tags[] }
+// - Validierung: Zahlen, Island-Bounds, eindeutige IDs
+// - Trennung: Daten (Spots) vs. Darstellung (Marker/Popup)
 // =============================
 
-const SPOT_MIN_ZOOM = 0; // immer sichtbar (ohne Klick)
+const SPOT_MIN_ZOOM = 0; // immer sichtbar (Popups per Klick)
 
-// Marker-Styles: fett, dunkel, klar trennbar vom Kartenmaterial
-const SPOT_STYLE = {
+const SPOT_MODES = {
   drone: {
-    radius: 9,
-    weight: 3,
-    opacity: 0.98,
-    color: "#062C78",      // dunkles, sattes Blau (Kontur)
-    fillColor: "#0B3D91",  // sattes Blau (Füllung)
-    fillOpacity: 0.92
+    key: "drone",
+    title: "Drohnen-Spots",
+    subtitle: "Luftbild-Potenzial. Keine Aussage zur Flugerlaubnis.",
   },
   photo: {
-    radius: 9,
-    weight: 3,
-    opacity: 0.98,
-    color: "#3B0B6B",      // dunkles Violett (Kontur)
-    fillColor: "#5A189A",  // sattes Violett (Füllung)
-    fillOpacity: 0.92
-  }
+    key: "photo",
+    title: "Fotografisch wertvoll",
+    subtitle: "Klassiker & Orientierung. Ohne Drohnenbezug.",
+  },
 };
 
-// =============================
-// FOTO-SPOTS – Südküste (Reykjavík → Höfn)
-// =============================
-const PHOTO_SPOTS = [
+// --- Spots: Südküste Reykjavík → Höfn (inkl. Klassiker) ---
+// Hinweis: Koordinaten sind Orientierungspunkte, nicht „Startpunkte“.
+// Tags sind rein kuratierend (z.B. "klassiker", "minimal", "windy") – keine Rechtsaussage.
+const DRONE_SPOTS_RAW = [
   {
-    id: "reykjanes_transition",
-    lat: 63.9000, lon: -22.2500,
-    cat: "Küste & Struktur",
-    text: "Übergänge von Siedlung zu Lava erzeugen klare Kontraste und grafische Brüche. Aus der Luft werden Linien und Maßstäbe sichtbar, die vom Boden oft verloren gehen. Wirkt besonders gut bei ruhigen Bedingungen."
+    id: "d_rvk_harbor_lines",
+    name: "Reykjavík – Linien & Dächer",
+    category: "Urban / Küste",
+    lat: 64.1466, lon: -21.9426,
+    short: "Hafenlinien, grafische Dächer, reduziertes Luftbild.",
+    long: "Küste, Hafenlinien, grafische Dächer – aus der Luft sauber und reduziert. Früh oder spät wird’s filmisch.",
+    tags: ["urban", "grafisch", "ruhig"]
   },
   {
-    id: "thjorsa_plain",
+    id: "d_reykjanes_lava_ridges",
+    name: "Reykjanes – Lava-Rhythmen",
+    category: "Lava / Struktur",
+    lat: 63.8870, lon: -22.2690,
+    short: "Lavafelder, Risse, Muster – Island als Zeichnung.",
+    long: "Lavafelder, Risse, Rhythmus. Aus der Höhe wird Island zur Zeichnung – hier zählt Komposition mehr als Drama.",
+    tags: ["struktur", "minimal", "textur"]
+  },
+  {
+    id: "d_thjorsa_plain",
+    name: "Þjórsá-Ebene – Maßstab",
+    category: "Maßstab & Weite",
     lat: 63.7833, lon: -20.8000,
-    cat: "Maßstab & Weite",
-    text: "Weite Ebenen und Flussläufe ergeben ruhige, lange Kompositionen. Ideal, wenn man Isolation und Größenverhältnisse zeigen will, statt einzelne Motive. Bei tiefer Sonne entstehen starke Schattenkanten."
+    short: "Weite Ebenen und Flussläufe – groß, ohne laut zu sein.",
+    long: "Weite Ebenen, Flussläufe, Ruhe. Wenn du Größe zeigen willst, ohne zu schreien: genau hier.",
+    tags: ["weite", "ruhig"]
   },
   {
-    id: "seljalands_area",
+    id: "d_seljalands_area",
+    name: "Seljalands-Umfeld – Wasseradern",
+    category: "Struktur & Bewegung",
     lat: 63.6170, lon: -19.9833,
-    cat: "Struktur & Bewegung",
-    text: "Nicht der Wasserfall, sondern das Umfeld: Wasseradern, Feuchtflächen und Linien im Gelände. Aus der Luft wird sichtbar, wie Wasser die Landschaft schreibt. Bei Böen eher vorsichtig, hier ist Turbulenz möglich."
+    short: "Nicht der Wasserfall – das Umfeld als Linienbild.",
+    long: "Nicht der Wasserfall – das Umfeld. Wasseradern schreiben Linien ins Land. Turbulenzen möglich: Wind ernst nehmen.",
+    tags: ["struktur", "windy"]
   },
   {
-    id: "skogasandur_minimal",
+    id: "d_skogasandur_minimal",
+    name: "Skógasandur – Minimal",
+    category: "Minimal / Textur",
     lat: 63.4833, lon: -19.4833,
-    cat: "Struktur & Grafik",
-    text: "Schwarze Ebenen, Texturen und feine Spuren – minimalistisch, grafisch, sehr „Island“. Der Reiz liegt im Reduzieren, nicht im Spektakel. Funktioniert gut, wenn das Licht seitlich kommt."
+    short: "Schwarze Ebenen, feine Spuren, große Stille.",
+    long: "Schwarze Ebenen, feine Spuren, große Stille. Reduktion statt Spektakel – der Himmel darf hier Hauptdarsteller sein.",
+    tags: ["minimal", "textur"]
   },
   {
-    id: "solheimasandur_outwash",
+    id: "d_solheimasandur_outwash",
+    name: "Sólheimasandur – Outwash-Muster",
+    category: "Muster / Outwash",
     lat: 63.4595, lon: -19.3646,
-    cat: "Struktur & Bewegung",
-    text: "Verzweigte Wasserläufe und wechselnde Sandstrukturen – Ordnung im Chaos. Aus der Luft entstehen natürliche Muster, die sich je nach Wetter und Jahreszeit verändern. Böen entscheiden hier oft über Go/No-Go."
+    short: "Verzweigte Wasserläufe – Ordnung im Chaos.",
+    long: "Verzweigte Wasserläufe, Sandstrukturen – Ordnung im Chaos. Wetter macht hier den Charakter.",
+    tags: ["muster", "textur", "windy"]
   },
   {
-    id: "dyrholaey_rhythm",
+    id: "d_dyrholaey_rhythm",
+    name: "Dyrhólaey – Rhythmus",
+    category: "Küste & Linien",
     lat: 63.4022, lon: -19.1307,
-    cat: "Küste & Linien",
-    text: "Küstenverlauf, Brandung und Rhythmus – starke Linienführung, klare Richtung. Aus der Luft wirken Wiederholungen und Übergänge besonders intensiv. Bitte sensibel: Natur und Besucherströme im Blick behalten."
+    short: "Brandung, Kanten, Richtung – starke Linienführung.",
+    long: "Brandung, Küstenkanten, Richtung. Aus der Luft: Rhythmus, der im Kopf bleibt.",
+    tags: ["kuste", "linien", "windy"]
   },
   {
-    id: "myrdalssandur_weite",
+    id: "d_myrdalssandur_weite",
+    name: "Mýrdalssandur – Weite",
+    category: "Weite / Komposition",
     lat: 63.4579, lon: -18.5581,
-    cat: "Maßstab & Weite",
-    text: "Große Flächen, wenig Ablenkung – ideal für Bilder, die Größe und Leere transportieren. Hier kann man mit Höhe und Perspektive sehr fein dosieren. Bei Wind fühlt sich die Weite schnell „hart“ an."
+    short: "Große Flächen – Höhe dosieren, Bild atmen lassen.",
+    long: "Große Flächen, wenig Ablenkung. Perfekt, um Höhe und Perspektive fein zu dosieren.",
+    tags: ["weite", "minimal"]
   },
   {
-    id: "skeidararsandur_dynamics",
+    id: "d_skeidararsandur_dynamics",
+    name: "Skeiðarársandur – Dynamik",
+    category: "Schwemmland XXL",
     lat: 63.9000, lon: -17.2333,
-    cat: "Bewegung & Struktur",
-    text: "Schwemmland in XXL: verzweigte Flussarme, ständig wechselnde Muster, sichtbare Dynamik. Aus der Luft wird die Landschaft zur Karte. Sehr lohnend – und zugleich ein Spot, an dem Böen ernst zu nehmen sind."
+    short: "Flussarme wie Adern – ständig neue Muster.",
+    long: "Flussarme wie Adern – ständig neue Muster. Lohnt sich, aber Böen und Wetterwechsel sind hier nicht optional.",
+    tags: ["muster", "windy", "weite"]
   },
   {
-    id: "skaftafell_tongues",
+    id: "d_skaftafell_edges",
+    name: "Skaftafell – Kanten (Eis/Erde)",
+    category: "Eis / Kanten",
     lat: 64.0147, lon: -16.9739,
-    cat: "Maßstab & Linien",
-    text: "Übergang von Eis zu Erde: Kanten, Risse, Richtungen. Aus der Luft entsteht ein starkes Gefühl von Gewicht und Bewegung im Stillstand. Bei klarer Sicht wirken Strukturen im Eis besonders plastisch."
+    short: "Übergänge von Eis zu Erde – Kanten, Risse, Richtung.",
+    long: "Übergänge von Eis zu Erde: Kanten, Risse, Richtung. Bei klarer Sicht sehr plastisch – bei Nebel wird’s abstrakt.",
+    tags: ["eis", "struktur"]
   },
   {
-    id: "jokulsarlon_outflow",
+    id: "d_jokulsarlon_outflow",
+    name: "Jökulsárlón – Abfluss & Textur",
+    category: "Textur & Fluss",
     lat: 64.0784, lon: -16.2306,
-    cat: "Textur & Fluss",
-    text: "Abfluss, Strömung und Textur – hier sieht man, wie das Wasser die Formen zieht. Aus der Luft ergeben sich ruhige, grafische Bilder mit hohem Detailreichtum. Licht und Wind bestimmen, ob es „glatt“ oder „wild“ wird."
+    short: "Abfluss, Strömung, Textur – grafisch bei gutem Licht.",
+    long: "Abfluss, Strömung, Textur. Aus der Luft grafisch – Licht entscheidet über „glatt“ oder „wild“.",
+    tags: ["textur", "fluss", "windy"]
   },
   {
-    id: "hofn_foreland",
+    id: "d_hofn_foreland",
+    name: "Höfn – Küstenvorland",
+    category: "Weite & Ruhe",
     lat: 64.2539, lon: -15.2121,
-    cat: "Weite & Ruhe",
-    text: "Küstennahe Ebenen und Lagunenbereiche – ein leiser Abschluss nach der Strecke. Aus der Luft wirken Übergänge zwischen Land, Wasser und Sand sehr klar. Ideal, wenn man Ruhe und Raum erzählen will."
-  }
+    short: "Lagunen- und Küstenebenen – ein leiser Schlussakkord.",
+    long: "Lagunen- und Küstenebenen – ein leiser Schlussakkord. Übergänge zwischen Land/Wasser/Sand.",
+    tags: ["ruhe", "weite"]
+  },
 ];
 
-// Falls es im Projekt eine eigene DRONE_SPOTS-Liste gibt, nutzen wir die.
-// Wenn nicht, fällt der Drohnen-Modus auf die Foto-Spots zurück (keine Spots erfunden).
-const DRONE_SPOTS_LIST = (typeof DRONE_SPOTS !== "undefined" && Array.isArray(DRONE_SPOTS)) ? DRONE_SPOTS : PHOTO_SPOTS;
+const PHOTO_SPOTS_RAW = [
+  {
+    id: "p_harpa",
+    name: "Harpa (Reykjavík)",
+    category: "Stadt / Architektur",
+    lat: 64.1500, lon: -21.9330,
+    short: "Kanten, Spiegelungen, grafische Flächen.",
+    long: "Harpa & Hafen – klare Kanten, Spiegelungen, grafische Flächen. Gerade im Winter ein Lichtlabor.",
+    tags: ["architektur", "grafisch"]
+  },
+  { id: "p_seljalandsfoss", name: "Seljalandsfoss", category: "Wasserfall", lat: 63.6156, lon: -19.9890,
+    short: "Ikonisch – besser mit Maßstab und Gegenlicht.",
+    long: "Seljalandsfoss – ikonisch, aber immer noch gut, wenn du Menschen als Maßstab nutzt oder ins Gegenlicht gehst.",
+    tags: ["klassiker", "wasserfall"]
+  },
+  { id: "p_gljufrabui", name: "Gljúfrabúi", category: "Wasserfall", lat: 63.6206, lon: -19.9883,
+    short: "Versteckter Vorhang – Bühne statt Postkarte.",
+    long: "Gljúfrabúi – versteckter Vorhang. Enge, Feuchtigkeit, Gegenlicht: Bühne statt Postkarte.",
+    tags: ["klassiker", "wasserfall", "nass"]
+  },
+  { id: "p_skogafoss", name: "Skógafoss", category: "Wasserfall", lat: 63.5321, lon: -19.5114,
+    short: "Kraft und Gischt – auch minimal denkbar.",
+    long: "Skógafoss – Kraft und Gischt. Funktioniert klassisch, aber auch minimal, wenn du die Fläche reduzierst.",
+    tags: ["klassiker", "wasserfall"]
+  },
+  { id: "p_kvernufoss", name: "Kvernufoss", category: "Wasserfall", lat: 63.5236, lon: -19.4887,
+    short: "Intimer, ruhiger – ideal für klare Lichtkanten.",
+    long: "Kvernufoss – kleiner, intimer. Perfekt für ruhige Bilder und klare Lichtkanten.",
+    tags: ["wasserfall", "ruhig"]
+  },
+  { id: "p_solheimajokull", name: "Sólheimajökull", category: "Gletscher", lat: 63.5305, lon: -19.3784,
+    short: "Eisstrukturen, Aschelinien – Bewegung im Stillstand.",
+    long: "Sólheimajökull – Eisstrukturen, Aschelinien, Bewegung im Stillstand. Nah ran: Textur statt Panorama.",
+    tags: ["eis", "textur", "klassiker"]
+  },
+  { id: "p_dyrholaey", name: "Dyrhólaey", category: "Klippen / Küste", lat: 63.4017, lon: -19.1300,
+    short: "Bögen, Kanten, Richtung – Wetter macht das Bild.",
+    long: "Dyrhólaey – Bögen, Kanten, Richtung. Wetter macht hier das Bild, nicht die Kamera.",
+    tags: ["kuste", "klassiker", "windy"]
+  },
+  { id: "p_reynisfjara", name: "Reynisfjara", category: "Strand / Basalt", lat: 63.4040, lon: -19.0453,
+    short: "Basaltsäulen, Wellen, Rhythmus – stark in SW.",
+    long: "Reynisfjara – Basaltsäulen, Wellen, Kontrast. Stark in Schwarzweiß, wenn du Rhythmus betonst.",
+    tags: ["klassiker", "basalt", "kuste"]
+  },
+  { id: "p_vik_church", name: "Vík – Kirche", category: "Ort / Motivanker", lat: 63.4186, lon: -19.0065,
+    short: "Ruhiger Fixpunkt über dem Meer.",
+    long: "Vík – Kirche als ruhiger Fixpunkt über dem Meer. Ideal als Atemzug zwischen den großen Motiven.",
+    tags: ["ort", "ruhig"]
+  },
+  { id: "p_fjadrargljufur", name: "Fjaðrárgljúfur", category: "Canyon", lat: 63.7717, lon: -18.1723,
+    short: "Linien, Kurven, Tiefe – Geduld lohnt.",
+    long: "Fjaðrárgljúfur – Linien, Kurven, Tiefe. Geh langsam: der Canyon belohnt Geduld.",
+    tags: ["klassiker", "linien"]
+  },
+  { id: "p_klaustur", name: "Kirkjubæjarklaustur", category: "Ort / Umgebung", lat: 63.7908, lon: -18.0637,
+    short: "Orientierungspunkt – Umgebung erzählt die kleinen Geschichten.",
+    long: "Kirkjubæjarklaustur – guter Orientierungspunkt. In der Umgebung: Nebel, Weite, kleine Geschichten.",
+    tags: ["ort", "weite"]
+  },
+  { id: "p_svartifoss", name: "Svartifoss", category: "Wasserfall / Basalt", lat: 64.0276, lon: -16.9747,
+    short: "Basaltorgeln wie Architektur – Perspektive entscheidet.",
+    long: "Svartifoss – Basaltorgeln wie Architektur. Der Klassiker, der sich trotzdem wehren kann: Perspektive entscheidet.",
+    tags: ["klassiker", "basalt", "wasserfall"]
+  },
+  { id: "p_svinafellsjokull", name: "Svínafellsjökull", category: "Gletscherzunge", lat: 64.0116, lon: -16.8608,
+    short: "Dramatische Eisfronten – Licht gibt dem Eis Stimme.",
+    long: "Svínafellsjökull – dramatische Eisfronten. Licht und Wolken geben dem Eis eine Stimme.",
+    tags: ["eis", "dramatisch"]
+  },
+  { id: "p_jokulsarlon", name: "Jökulsárlón", category: "Lagune", lat: 64.0484, lon: -16.1795,
+    short: "Formen statt Wow – Stille fotografieren.",
+    long: "Jökulsárlón – Eisberge, Spiegel, Stille. Arbeite mit Formen statt mit „Wow“.",
+    tags: ["klassiker", "ruhe", "eis"]
+  },
+  { id: "p_diamond_beach", name: "Diamond Beach", category: "Strand / Eis", lat: 64.0445, lon: -16.1770,
+    short: "Eis auf schwarzem Sand – laut im Ort, leise im Bild.",
+    long: "Diamond Beach – Eis auf schwarzem Sand. Der Ort ist laut, das Bild darf leise sein.",
+    tags: ["klassiker", "eis", "kuste"]
+  },
+  { id: "p_stokknes", name: "Stokksnes / Vestrahorn", category: "Dünen / Berge", lat: 64.2491, lon: -14.9713,
+    short: "Dünen, Gras, Vestrahorn – Wind & Drama, auch Minimalismus.",
+    long: "Stokksnes – Dünen, Gras, Vestrahorn. Ein Ort für Wind und Drama – und für Minimalismus.",
+    tags: ["klassiker", "windy", "berge"]
+  },
+  { id: "p_hofn", name: "Höfn", category: "Ort / Abschluss", lat: 64.2539, lon: -15.2121,
+    short: "Hafen, Licht, Alltagsruhe – Satzzeichen am Ende der Route.",
+    long: "Höfn – guter Abschluss. Hafen, Licht, Alltagsruhe. Wenn der Tag ausklingt, ist das hier ein Satzzeichen.",
+    tags: ["ort", "ruhe"]
+  },
+];
 
-// Leaflet layer state
-let _spotLayerDrone = null;
-let _spotLayerPhoto = null;
-let _spotsOnMap = false;
-let _spotMode = "drone"; // default: Drohnen-Pilot (wie zuvor üblich)
+// ---------- Normalisierung / Validierung ----------
+function _spotSafe(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+}
 
-function _spotPopupHTML(spot, kindLabel) {
-  const safe = (s) => String(s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function _spotFmt(n) {
+  return (Math.round(Number(n) * 1e6) / 1e6).toFixed(6);
+}
+
+function _normalizeSpot(spot) {
+  const out = {
+    id: String(spot.id || "").trim(),
+    name: String(spot.name || "").trim(),
+    category: String(spot.category || "").trim(),
+    lat: Number(spot.lat),
+    lon: Number(spot.lon),
+    short: String(spot.short || "").trim(),
+    long: String(spot.long || spot.description || "").trim(),
+    tags: Array.isArray(spot.tags) ? spot.tags.map((t) => String(t).trim()).filter(Boolean) : [],
+  };
+  return out;
+}
+
+function _validateSpots(modeKey, spots) {
+  const errors = [];
+  const ids = new Set();
+
+  for (const s0 of spots) {
+    const s = _normalizeSpot(s0);
+
+    if (!s.id) errors.push(`[${modeKey}] Spot ohne id`);
+    if (ids.has(s.id)) errors.push(`[${modeKey}] Doppelte id: ${s.id}`);
+    ids.add(s.id);
+
+    if (!Number.isFinite(s.lat) || !Number.isFinite(s.lon)) {
+      errors.push(`[${modeKey}] Ungültige Koordinaten: ${s.id}`);
+      continue;
+    }
+
+    if (ENFORCE_ICELAND_ONLY && !isInsideIceland(s.lat, s.lon)) {
+      errors.push(`[${modeKey}] Außerhalb Island-Bounds: ${s.id} (${_spotFmt(s.lat)}, ${_spotFmt(s.lon)})`);
+    }
+  }
+
+  // Fehler bewusst nur loggen – App darf nicht crashen
+  if (errors.length) {
+    try { console.warn("Spot-Validation:", errors); } catch (_) {}
+  }
+
+  // return normalisierte Spots (auch wenn Warnungen)
+  return spots.map(_normalizeSpot);
+}
+
+// ---------- Darstellung ----------
+function _spotPopupHTML(modeKey, spot) {
+  const header = modeKey === "drone" ? "Drohnen-Spot" : "Fotografischer Spot";
+  const hint =
+    modeKey === "drone"
+      ? "Hinweis: Inspiration. Keine Flugfreigabe. Ampel/Wind/Regeln separat prüfen."
+      : "Hinweis: Orientierung. Kein Drohnenbezug, keine Flugfreigabe.";
+
+  const title = spot.name ? `<div style="font-weight:800; margin-bottom:4px;">${_spotSafe(spot.name)}</div>` : "";
+  const cat = spot.category ? `<div style="opacity:.85; margin-bottom:6px;"><i>${_spotSafe(spot.category)}</i></div>` : "";
+  const short = spot.short ? `<div style="margin-bottom:8px; opacity:.92; line-height:1.35;">${_spotSafe(spot.short)}</div>` : "";
+  const long = spot.long ? `<div style="line-height:1.35;">${_spotSafe(spot.long)}</div>` : "";
+  const tags = (spot.tags && spot.tags.length)
+    ? `<div style="margin-top:8px; font-size:12px; opacity:.75;">Tags: ${spot.tags.map(_spotSafe).join(", ")}</div>`
+    : "";
+
   return `
-    <div style="font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial; max-width:260px">
-      <div style="font-weight:800; margin-bottom:4px;">${safe(kindLabel)} Spot</div>
-      <div style="opacity:.85; margin-bottom:6px;"><i>${safe(spot.cat || "—")}</i></div>
-      <div style="line-height:1.35;">${safe(spot.text || "")}</div>
-      <div style="margin-top:8px; font-size:12px; opacity:.7;">
-        Hinweis: Inspiration, keine Flugfreigabe. Recht/Wind bitte separat prüfen.
+    <div style="font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial; max-width:300px">
+      <div style="opacity:.65; font-size:12px; font-weight:700; margin-bottom:6px;">${_spotSafe(header)}</div>
+      ${title}
+      ${cat}
+      <div style="margin-bottom:6px; font-size:12px; opacity:.85;">
+        Koordinaten: <b>${_spotFmt(spot.lat)}, ${_spotFmt(spot.lon)}</b>
       </div>
+      ${short}
+      ${long}
+      ${tags}
+      <div style="margin-top:10px;">
+        <button type="button"
+          class="maps-btn"
+          data-lat="${spot.lat}"
+          data-lon="${spot.lon}"
+          data-name=${JSON.stringify(spot.name || "")}
+          style="padding:6px 10px; border-radius:10px; border:1px solid rgba(255,255,255,0.14); background:rgba(255,255,255,0.08); color:inherit; cursor:pointer; pointer-events:auto; touch-action:manipulation;">
+          In Maps öffnen
+        </button>
+      </div>
+      <div style="margin-top:10px; font-size:12px; opacity:.7;">${_spotSafe(hint)}</div>
     </div>
   `;
 }
 
+
+async function _jumpToSpot(spot) {
+  if (!spot || !Number.isFinite(spot.lat) || !Number.isFinite(spot.lon)) return;
+
+  const g = guardToIceland(spot.lat, spot.lon, "Island-only: Spot liegt außerhalb des erlaubten Bereichs.");
+  const lat = g.lat;
+  const lon = g.lon;
+
+  try { _setSelectedSpotName(spot.name || ""); } catch (_) {}
+
+  // Pin bewegen + als "manuell" behandeln (kein Routing, keine Navigation)
+  try { setMode("manual"); } catch (_) {}
+  try { setInputs(lat, lon); } catch (_) {}
+  try { updatePills(lat, lon, "Spot"); } catch (_) {}
+  try { updateMap(lat, lon, null); } catch (_) {}
+
+  try { manualCoords = { lat, lon }; } catch (_) {}
+
+  try { await runCheckWithCoords(lat, lon, "Spot", null); } catch (_) {}
+}
+
+function _buildSpotLayer(modeKey, spots, style) {
+  const layer = L.layerGroup();
+  for (const s of spots) {
+    const m = L.circleMarker([s.lat, s.lon], style);
+    m.bindPopup(_spotPopupHTML(modeKey, s));
+    m.on("click", () => { _jumpToSpot(s); });
+    layer.addLayer(m);
+  }
+  return layer;
+}
+
+// ---------- Runtime state ----------
+let _spotMode = SPOT_MODES.drone.key;
+let _droneSpotLayer = null;
+let _photoSpotLayer = null;
+
+let _DRONE_SPOTS = [];
+let _PHOTO_SPOTS = [];
+
 function _ensureSpotLayers() {
-  if (_spotLayerDrone && _spotLayerPhoto) return;
+  if (!map) return;
 
-  _spotLayerDrone = L.layerGroup();
-  _spotLayerPhoto = L.layerGroup();
+  if (!_DRONE_SPOTS.length) _DRONE_SPOTS = _validateSpots("drone", DRONE_SPOTS_RAW);
+  if (!_PHOTO_SPOTS.length) _PHOTO_SPOTS = _validateSpots("photo", PHOTO_SPOTS_RAW);
 
-  for (const s of DRONE_SPOTS_LIST) {
-    const st = SPOT_STYLE.drone;
-    const m = L.circleMarker([s.lat, s.lon], {
-      radius: st.radius,
-      weight: st.weight,
-      opacity: st.opacity,
-      color: st.color,
-      fillColor: st.fillColor,
-      fillOpacity: st.fillOpacity
+  if (!_droneSpotLayer) {
+    _droneSpotLayer = _buildSpotLayer("drone", _DRONE_SPOTS, {
+      radius: 7,
+      weight: 2,
+      opacity: 0.95,
+      color: "rgba(88, 24, 124, 0.95)",
+      fillColor: "rgba(88, 24, 124, 0.35)",
+      fillOpacity: 0.6,
     });
-    m.bindPopup(_spotPopupHTML(s, "Drohnen"));
-    _spotLayerDrone.addLayer(m);
   }
 
-  for (const s of PHOTO_SPOTS) {
-    const st = SPOT_STYLE.photo;
-    const m = L.circleMarker([s.lat, s.lon], {
-      radius: st.radius,
-      weight: st.weight,
-      opacity: st.opacity,
-      color: st.color,
-      fillColor: st.fillColor,
-      fillOpacity: st.fillOpacity
+  if (!_photoSpotLayer) {
+    _photoSpotLayer = _buildSpotLayer("photo", _PHOTO_SPOTS, {
+      radius: 7,
+      weight: 2,
+      opacity: 0.95,
+      color: "rgba(10, 38, 102, 0.95)",
+      fillColor: "rgba(10, 38, 102, 0.35)",
+      fillOpacity: 0.6,
     });
-    m.bindPopup(_spotPopupHTML(s, "Foto"));
-    _spotLayerPhoto.addLayer(m);
   }
 }
 
-function _applySpotMode(mode) {
-  _spotMode = (mode === "photo") ? "photo" : "drone";
-  try { localStorage.setItem("spotMode", _spotMode); } catch (_) {}
+function _setSpotMode(modeKey) {
+  const next = modeKey === "photo" ? "photo" : "drone";
+  _spotMode = next;
 
-  if (!map) return;
   _ensureSpotLayers();
 
-  // remove both first
-  try { if (map.hasLayer(_spotLayerDrone)) map.removeLayer(_spotLayerDrone); } catch (_) {}
-  try { if (map.hasLayer(_spotLayerPhoto)) map.removeLayer(_spotLayerPhoto); } catch (_) {}
+  // nur EIN Layer sichtbar (klarer Fokus)
+  if (map && _droneSpotLayer) {
+    const has = map.hasLayer(_droneSpotLayer);
+    if (next === "drone" && !has) _droneSpotLayer.addTo(map);
+    if (next !== "drone" && has) map.removeLayer(_droneSpotLayer);
+  }
 
-  // add selected
-  if (_spotMode === "photo") _spotLayerPhoto.addTo(map);
-  else _spotLayerDrone.addTo(map);
+  if (map && _photoSpotLayer) {
+    const has = map.hasLayer(_photoSpotLayer);
+    if (next === "photo" && !has) _photoSpotLayer.addTo(map);
+    if (next !== "photo" && has) map.removeLayer(_photoSpotLayer);
+  }
 
-  _spotsOnMap = true;
+  _renderSpotPill();
+}
 
-  // Update button visuals (if present)
+function _renderSpotPill() {
+  const pill = document.getElementById("spotPill");
+  if (!pill) return;
+
+  const m = SPOT_MODES[_spotMode] || SPOT_MODES.drone;
+  pill.textContent = `Spots: ${m.title}`;
+}
+
+function _ensureSpotUI() {
+  if (document.getElementById("spotBox")) return;
+
+  const box = document.createElement("div");
+  box.id = "spotBox";
+  box.style.marginTop = "10px";
+  box.style.padding = "10px";
+  box.style.borderRadius = "10px";
+  box.style.border = "1px solid rgba(255,255,255,0.08)";
+  box.style.background = "rgba(0,0,0,0.25)";
+  box.style.color = "inherit";
+
+  box.innerHTML = `
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+      <div style="font-weight:800;">Spot-Modus</div>
+      <div id="spotPill" style="padding:4px 10px; border-radius:999px; font-size:12px; border:1px solid rgba(255,255,255,0.12); opacity:.9;">
+        —
+      </div>
+    </div>
+
+    <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
+      <button id="btnSpotDrone" type="button" style="padding:8px 10px; border-radius:10px; border:1px solid rgba(255,255,255,0.12); background:rgba(255,255,255,0.06); color:inherit; cursor:pointer;">
+        ${_spotSafe(SPOT_MODES.drone.title)}
+      </button>
+      <button id="btnSpotPhoto" type="button" style="padding:8px 10px; border-radius:10px; border:1px solid rgba(255,255,255,0.12); background:rgba(255,255,255,0.06); color:inherit; cursor:pointer;">
+        ${_spotSafe(SPOT_MODES.photo.title)}
+      </button>
+    </div>
+
+    <div id="spotDesc" style="margin-top:8px; opacity:.9; line-height:1.35;">
+      —
+    </div>
+
+    <div style="margin-top:6px; opacity:.65; font-size:12px; line-height:1.25;">
+      Spots sind Inspiration/Orientierung. Keine Navigation, kein Routing, keine Google-Dienste.
+    </div>
+  `;
+
+  const anchor = document.getElementById("windBox") || document.getElementById("detail") || document.body;
+  anchor.parentNode.insertBefore(box, anchor.nextSibling);
+
   const bDrone = document.getElementById("btnSpotDrone");
   const bPhoto = document.getElementById("btnSpotPhoto");
-  if (bDrone && bPhoto) {
-    const on = "1px solid rgba(255,255,255,0.35)";
-    const off = "1px solid rgba(255,255,255,0.14)";
-    bDrone.style.border = (_spotMode === "drone") ? on : off;
-    bPhoto.style.border = (_spotMode === "photo") ? on : off;
+  const desc = document.getElementById("spotDesc");
 
-    bDrone.style.opacity = (_spotMode === "drone") ? "1" : "0.75";
-    bPhoto.style.opacity = (_spotMode === "photo") ? "1" : "0.75";
-  }
+  const paintButtons = () => {
+    const on = "rgba(255,255,255,0.12)";
+    const off = "rgba(255,255,255,0.06)";
+    if (bDrone) bDrone.style.background = (_spotMode === "drone" ? on : off);
+    if (bPhoto) bPhoto.style.background = (_spotMode === "photo" ? on : off);
+
+    const m = SPOT_MODES[_spotMode] || SPOT_MODES.drone;
+    if (desc) desc.innerHTML = `<b>${_spotSafe(m.title)}</b><br/><span style="opacity:.9">${_spotSafe(m.subtitle)}</span>`;
+    _renderSpotPill();
+  };
+
+  if (bDrone) bDrone.addEventListener("click", () => { _setSpotMode("drone"); paintButtons(); });
+  if (bPhoto) bPhoto.addEventListener("click", () => { _setSpotMode("photo"); paintButtons(); });
+
+  // initial
+  paintButtons();
 }
 
 function _updateSpotVisibility() {
@@ -1431,86 +1853,27 @@ function _updateSpotVisibility() {
   const z = map.getZoom();
   const shouldShow = z >= SPOT_MIN_ZOOM;
 
-  if (!shouldShow && _spotsOnMap) {
-    try { if (map.hasLayer(_spotLayerDrone)) map.removeLayer(_spotLayerDrone); } catch (_) {}
-    try { if (map.hasLayer(_spotLayerPhoto)) map.removeLayer(_spotLayerPhoto); } catch (_) {}
-    _spotsOnMap = false;
+  if (!shouldShow) {
+    try {
+      if (_droneSpotLayer && map.hasLayer(_droneSpotLayer)) map.removeLayer(_droneSpotLayer);
+      if (_photoSpotLayer && map.hasLayer(_photoSpotLayer)) map.removeLayer(_photoSpotLayer);
+    } catch (_) {}
     return;
   }
 
-  if (shouldShow && !_spotsOnMap) {
-    _applySpotMode(_spotMode);
-  }
+  _setSpotMode(_spotMode);
 }
 
-function _ensureSpotModeToggleUI() {
-  // Toggle war in deinem Projekt sichtbar; wir hängen ihn robust ins Panel,
-  // ohne index.html anfassen zu müssen.
-  if (document.getElementById("spotModeBox")) return;
-
-  const panel = document.querySelector(".panel") || document.body;
-
-  const box = document.createElement("div");
-  box.id = "spotModeBox";
-  box.style.marginTop = "10px";
-  box.style.padding = "10px";
-  box.style.borderRadius = "10px";
-  box.style.border = "1px solid rgba(255,255,255,0.08)";
-  box.style.background = "rgba(0,0,0,0.18)";
-
-  box.innerHTML = `
-    <div style="display:flex; gap:10px; align-items:center; justify-content:space-between; flex-wrap:wrap;">
-      <div style="font-weight:800; opacity:.95;">Spot-Modus</div>
-      <div style="display:flex; gap:8px; align-items:center;">
-        <button id="btnSpotDrone" style="padding:10px 12px; border-radius:12px; background: rgba(0,0,0,0.25); color:#fff; cursor:pointer;">
-          Drohnen-Pilot
-        </button>
-        <button id="btnSpotPhoto" style="padding:10px 12px; border-radius:12px; background: rgba(0,0,0,0.25); color:#fff; cursor:pointer;">
-          Fotografisch wertvoll
-        </button>
-      </div>
-    </div>
-    <div style="margin-top:6px; opacity:.7; font-size:12px; line-height:1.25;">
-      Blau = Drohnen-Spots · Violett = Foto-Spots
-    </div>
-  `;
-
-  // Einhängen: direkt nach der Windbox, falls vorhanden, sonst ans Ende des Panels
-  const windBox = document.getElementById("windBox");
-  if (windBox && windBox.parentNode) windBox.parentNode.insertBefore(box, windBox.nextSibling);
-  else panel.appendChild(box);
-
-  const bDrone = document.getElementById("btnSpotDrone");
-  const bPhoto = document.getElementById("btnSpotPhoto");
-  if (bDrone) bDrone.addEventListener("click", () => { _applySpotMode("drone"); });
-  if (bPhoto) bPhoto.addEventListener("click", () => { _applySpotMode("photo"); });
-
-  // Zustand initial aus LocalStorage
-  try {
-    const saved = localStorage.getItem("spotMode");
-    if (saved === "photo" || saved === "drone") _spotMode = saved;
-  } catch (_) {}
-
-  // UI sync
-  _applySpotMode(_spotMode);
-}
-
-// Hook nach Map-Init (robust, ohne Refactor)
+// Hook nach Map-Init (robust)
 try {
-  document.addEventListener("DOMContentLoaded", () => {
-    try { _ensureSpotModeToggleUI(); } catch (_) {}
-  });
-
-  // Falls DOMContentLoaded schon durch ist (z.B. Script am Ende), sofort versuchen:
-  try { _ensureSpotModeToggleUI(); } catch (_) {}
-
+  _ensureSpotUI();
   _updateSpotVisibility();
   map.on("zoomend", _updateSpotVisibility);
-} catch (e) {
+} catch (_) {
   const _spotTimer = setInterval(() => {
     try {
       if (typeof map !== "undefined" && map && typeof map.getZoom === "function") {
-        try { _ensureSpotModeToggleUI(); } catch (_) {}
+        _ensureSpotUI();
         _updateSpotVisibility();
         map.on("zoomend", _updateSpotVisibility);
         clearInterval(_spotTimer);
