@@ -1963,3 +1963,195 @@ try {
     } catch (_) {}
   }, 250);
 }
+
+
+// =============================
+// FLOATING ACTIONS – Koordinaten-Übergabe (immer verfügbar)
+// - Keine Navigation in der App. Nur Übergabe an Karten-/Navi-App oder Copy.
+// =============================
+(function installFloatingActions(){
+  const DOCK_ID = "fabDock";
+  const TOAST_ID = "fabToast";
+
+  function _fmt6(x){
+    const n = Number(x);
+    if (!Number.isFinite(n)) return "";
+    return (Math.round(n * 1e6) / 1e6).toFixed(6);
+  }
+
+  function _getCurrentCoords(){
+    // Primär: Marker (Pin)
+    try {
+      if (typeof marker !== "undefined" && marker && typeof marker.getLatLng === "function") {
+        const p = marker.getLatLng();
+        if (p && Number.isFinite(p.lat) && Number.isFinite(p.lng)) return { lat: p.lat, lon: p.lng };
+      }
+    } catch (_) {}
+
+    // Fallback: Inputs
+    try {
+      if (typeof latInput !== "undefined" && typeof lonInput !== "undefined" && latInput && lonInput) {
+        const lat = Number(String(latInput.value || "").replace(",", "."));
+        const lon = Number(String(lonInput.value || "").replace(",", "."));
+        if (Number.isFinite(lat) && Number.isFinite(lon)) return { lat, lon };
+      }
+    } catch (_) {}
+
+    return null;
+  }
+
+  function _toast(msg){
+    try {
+      const t = document.getElementById(TOAST_ID);
+      if (!t) return;
+      t.textContent = String(msg || "");
+      t.style.opacity = "1";
+      clearTimeout(_toast._timer);
+      _toast._timer = setTimeout(() => { try { t.style.opacity = "0"; } catch(_){} }, 1400);
+    } catch (_) {}
+  }
+
+  async function _copyText(text){
+    const s = String(text || "");
+    if (!s) return false;
+
+    // Modern API
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+        await navigator.clipboard.writeText(s);
+        return true;
+      }
+    } catch (_) {}
+
+    // Fallback
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = s;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      ta.style.top = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return !!ok;
+    } catch (_) {}
+
+    return false;
+  }
+
+  function ensureDock(){
+    if (document.getElementById(DOCK_ID)) return;
+
+    const dock = document.createElement("div");
+    dock.id = DOCK_ID;
+
+    // Position: unten rechts, über der Karte (safe area)
+    dock.style.position = "fixed";
+    dock.style.right = "14px";
+    dock.style.bottom = "14px";
+    dock.style.zIndex = "9999";
+    dock.style.display = "flex";
+    dock.style.flexDirection = "column";
+    dock.style.gap = "10px";
+    dock.style.pointerEvents = "none"; // nur Buttons clickable
+    dock.style.paddingBottom = "env(safe-area-inset-bottom)";
+    dock.style.paddingRight = "env(safe-area-inset-right)";
+
+    const mkBtn = (id, label, icon) => {
+      const b = document.createElement("button");
+      b.id = id;
+      b.type = "button";
+      b.setAttribute("aria-label", label);
+      b.style.pointerEvents = "auto";
+      b.style.border = "1px solid rgba(255,255,255,0.14)";
+      b.style.background = "rgba(0,0,0,0.68)";
+      b.style.backdropFilter = "blur(6px)";
+      b.style.webkitBackdropFilter = "blur(6px)";
+      b.style.color = "inherit";
+      b.style.borderRadius = "14px";
+      b.style.padding = "10px 12px";
+      b.style.font = "600 13px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+      b.style.boxShadow = "0 8px 22px rgba(0,0,0,0.35)";
+      b.style.cursor = "pointer";
+      b.style.userSelect = "none";
+      b.style.display = "inline-flex";
+      b.style.alignItems = "center";
+      b.style.gap = "8px";
+      b.style.maxWidth = "260px";
+      b.style.whiteSpace = "nowrap";
+      b.style.opacity = "0.98";
+      b.innerHTML = `<span style="font-size:16px; line-height:1;">${icon}</span><span>${label}</span>`;
+      b.addEventListener("mouseenter", () => { try { b.style.opacity = "1"; } catch(_){} });
+      b.addEventListener("mouseleave", () => { try { b.style.opacity = "0.98"; } catch(_){} });
+      return b;
+    };
+
+    const btnMaps = mkBtn("fabMaps", "In Karten öffnen", "📍");
+    const btnCopy = mkBtn("fabCopy", "Koordinaten kopieren", "📋");
+
+    const toast = document.createElement("div");
+    toast.id = TOAST_ID;
+    toast.style.pointerEvents = "none";
+    toast.style.alignSelf = "flex-end";
+    toast.style.padding = "6px 10px";
+    toast.style.borderRadius = "10px";
+    toast.style.background = "rgba(0,0,0,0.62)";
+    toast.style.border = "1px solid rgba(255,255,255,0.10)";
+    toast.style.font = "600 12px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+    toast.style.opacity = "0";
+    toast.style.transition = "opacity 220ms ease";
+
+    dock.appendChild(btnMaps);
+    dock.appendChild(btnCopy);
+    dock.appendChild(toast);
+
+    document.body.appendChild(dock);
+
+    // Handlers
+    btnMaps.addEventListener("click", (ev) => {
+      try {
+        if (ev) { ev.preventDefault?.(); ev.stopPropagation?.(); }
+        const c = _getCurrentCoords();
+        if (!c) { _toast("Keine Koordinaten."); return; }
+
+        // Spot-Name optional als Label (rein kosmetisch)
+        let label = "";
+        try {
+          label = (typeof _selectedSpotName === "string" && _selectedSpotName) ? _selectedSpotName : "";
+        } catch (_) {}
+
+        openInMaps(c.lat, c.lon, label);
+      } catch (_) {
+        _toast("Karten-App konnte nicht geöffnet werden.");
+      }
+    });
+
+    btnCopy.addEventListener("click", async (ev) => {
+      try {
+        if (ev) { ev.preventDefault?.(); ev.stopPropagation?.(); }
+        const c = _getCurrentCoords();
+        if (!c) { _toast("Keine Koordinaten."); return; }
+
+        const base = `${_fmt6(c.lat)}, ${_fmt6(c.lon)}`;
+        let label = "";
+        try {
+          label = (typeof _selectedSpotName === "string" && _selectedSpotName) ? ` — ${_selectedSpotName}` : "";
+        } catch (_) {}
+
+        const ok = await _copyText(base);
+        _toast(ok ? ("Kopiert: " + base) : ("Nicht kopiert: " + base));
+      } catch (_) {
+        _toast("Kopieren fehlgeschlagen.");
+      }
+    });
+  }
+
+  // Install when DOM is there (and also after load, safe)
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", ensureDock);
+  } else {
+    ensureDock();
+  }
+})();
