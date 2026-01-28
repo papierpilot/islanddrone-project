@@ -1458,6 +1458,101 @@ const SPOT_MODES = {
   },
 };
 
+// =============================
+// Spot-Info am Pin (Radius)
+// - zeigt Kontext (2–3 Sätze) sobald der Pin in der Nähe eines Spots ist
+// - keine Navigation / kein Routing / keine Rechtsaussage
+// =============================
+const SPOT_INFO_RADIUS_M = 250;
+
+let _nearSpotState = null; // { modeKey, spot, distM } oder null
+
+function _deg2rad(d) { return (d * Math.PI) / 180; }
+
+// Haversine (Meter)
+function _distanceM(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const dLat = _deg2rad(lat2 - lat1);
+  const dLon = _deg2rad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(_deg2rad(lat1)) * Math.cos(_deg2rad(lat2)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+function _pickNearestSpot(lat, lon) {
+  // sicherstellen, dass Daten normalisiert vorhanden sind
+  if (!_DRONE_SPOTS.length) _DRONE_SPOTS = _validateSpots("drone", DRONE_SPOTS_RAW);
+  if (!_PHOTO_SPOTS.length) _PHOTO_SPOTS = _validateSpots("photo", PHOTO_SPOTS_RAW);
+
+  let best = null;
+
+  const consider = (modeKey, arr) => {
+    for (const s of arr) {
+      if (!s || !Number.isFinite(s.lat) || !Number.isFinite(s.lon)) continue;
+      const d = _distanceM(lat, lon, s.lat, s.lon);
+      if (d <= SPOT_INFO_RADIUS_M && (!best || d < best.distM)) {
+        best = { modeKey, spot: s, distM: d };
+      }
+    }
+  };
+
+  consider("drone", _DRONE_SPOTS);
+  consider("photo", _PHOTO_SPOTS);
+
+  return best;
+}
+
+function _spotInfoText(spot) {
+  const parts = [];
+  if (spot && spot.short) parts.push(String(spot.short).trim());
+  if (spot && spot.long) parts.push(String(spot.long).trim());
+
+  // 2–3 Sätze, ohne Roman:
+  // - wir nehmen short+long, schneiden aber hart bei ~340 Zeichen
+  const raw = parts.filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+  if (!raw) return "";
+
+  const max = 340;
+  if (raw.length <= max) return raw;
+
+  // hübsch abbrechen (am nächsten Punkt oder Leerzeichen)
+  const cut = raw.slice(0, max);
+  const lastDot = Math.max(cut.lastIndexOf("."), cut.lastIndexOf("!"), cut.lastIndexOf("?"));
+  if (lastDot > 120) return cut.slice(0, lastDot + 1).trim();
+  const lastSpace = cut.lastIndexOf(" ");
+  return (lastSpace > 120 ? cut.slice(0, lastSpace) : cut).trim() + "…";
+}
+
+function _renderNearSpotBox(lat, lon) {
+  const box = document.getElementById("nearSpotBox");
+  const titleEl = document.getElementById("nearSpotTitle");
+  const metaEl = document.getElementById("nearSpotMeta");
+  const textEl = document.getElementById("nearSpotText");
+  if (!box || !titleEl || !metaEl || !textEl) return;
+
+  const best = _pickNearestSpot(lat, lon);
+  _nearSpotState = best;
+
+  if (!best) {
+    titleEl.textContent = "Spot-Info";
+    metaEl.textContent = `Kein Spot im Umkreis von ${SPOT_INFO_RADIUS_M} m.`;
+    textEl.textContent = "—";
+    return;
+  }
+
+  const modeLabel = best.modeKey === "drone" ? "Drohnen-Spot" : "Fotografisch wertvoll";
+  titleEl.textContent = best.spot && best.spot.name ? best.spot.name : "Spot";
+  const dist = Math.round(best.distM);
+  const cat = (best.spot && best.spot.category) ? String(best.spot.category).trim() : "";
+  metaEl.textContent = `${modeLabel}${cat ? " · " + cat : ""} · ca. ${dist} m entfernt`;
+
+  const t = _spotInfoText(best.spot);
+  textEl.textContent = t || "—";
+}
+
 // --- Spots: Südküste Reykjavík → Höfn (inkl. Klassiker) ---
 // Hinweis: Koordinaten sind Orientierungspunkte, nicht „Startpunkte“.
 // Tags sind rein kuratierend (z.B. "klassiker", "minimal", "windy") – keine Rechtsaussage.
@@ -1906,6 +2001,32 @@ function _ensureSpotUI() {
   const anchor = document.getElementById("windBox") || document.getElementById("detail") || document.body;
   anchor.parentNode.insertBefore(box, anchor.nextSibling);
 
+  // Near-Spot-Info (immer sichtbar, aber zeigt nur Inhalt wenn im Radius)
+  try {
+    if (!document.getElementById("nearSpotBox")) {
+      const nb = document.createElement("div");
+      nb.id = "nearSpotBox";
+      nb.style.marginTop = "10px";
+      nb.style.padding = "10px";
+      nb.style.borderRadius = "10px";
+      nb.style.border = "1px solid rgba(255,255,255,0.08)";
+      nb.style.background = "rgba(0,0,0,0.22)";
+      nb.style.color = "inherit";
+
+      nb.innerHTML = `
+        <div style="font-weight:800;" id="nearSpotTitle">Spot-Info</div>
+        <div style="margin-top:4px; opacity:.75; font-size:12px;" id="nearSpotMeta">—</div>
+        <div style="margin-top:8px; opacity:.92; line-height:1.35;" id="nearSpotText">—</div>
+        <div style="margin-top:8px; opacity:.65; font-size:12px; line-height:1.25;">
+          Hinweis: Kontext/Orientierung. Keine Navigation, keine Flugfreigabe.
+        </div>
+      `;
+
+      // direkt nach Spot-Box einfügen
+      if (box && box.parentNode) box.parentNode.insertBefore(nb, box.nextSibling);
+    }
+  } catch (_) {}
+
   const bDrone = document.getElementById("btnSpotDrone");
   const bPhoto = document.getElementById("btnSpotPhoto");
   const desc = document.getElementById("spotDesc");
@@ -1964,6 +2085,59 @@ try {
   }, 250);
 }
 
+
+
+// =============================
+// Spot-Info Hook (Pin → nächster Spot innerhalb 250m)
+// =============================
+let _spotInfoHooksInstalled = false;
+
+function _spotInfoInstallHooks() {
+  if (_spotInfoHooksInstalled) return;
+  if (typeof marker === "undefined" || !marker) return;
+
+  // initial render
+  try {
+    const p = marker.getLatLng();
+    _renderNearSpotBox(p.lat, p.lng);
+  } catch (_) {}
+
+  const onMove = () => {
+    try {
+      const p = marker.getLatLng();
+      _renderNearSpotBox(p.lat, p.lng);
+    } catch (_) {}
+  };
+
+  try { marker.on("drag", onMove); } catch (_) {}
+  try { marker.on("dragend", onMove); } catch (_) {}
+
+  // updateMap hooken (GPS/Manual/Programmatic)
+  try {
+    if (typeof updateMap === "function" && !updateMap.__spotInfoWrapped) {
+      const _u = updateMap;
+      const wrapped = function(lat, lon, accuracyMeters = null) {
+        const r = _u(lat, lon, accuracyMeters);
+        try { _renderNearSpotBox(lat, lon); } catch (_) {}
+        return r;
+      };
+      wrapped.__spotInfoWrapped = true;
+      updateMap = wrapped;
+    }
+  } catch (_) {}
+
+  _spotInfoHooksInstalled = true;
+}
+
+// warten bis marker existiert
+const _spotInfoWait = setInterval(() => {
+  try {
+    if (typeof marker !== "undefined" && marker) {
+      _spotInfoInstallHooks();
+      clearInterval(_spotInfoWait);
+    }
+  } catch (_) {}
+}, 250);
 
 // =============================
 // MAP ACTIONS – Koordinaten-Übergabe (immer verfügbar, unter der Karte)
