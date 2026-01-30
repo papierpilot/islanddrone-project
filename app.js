@@ -2294,3 +2294,288 @@ const _spotInfoWait = setInterval(() => {
     _ensureBar();
   }
 })();
+/* ============================================================
+   PRE-FLIGHT OVERLAY (additiv, read-only content)
+   - Button: "Vor dem ersten Flug"
+   - Modal/Overlay mit Regeln & Links
+   - Inhalte: JSON-Objekt, UI liest nur
+   ============================================================ */
+
+const PREFLIGHT_INFO = {
+  title: "Vor dem ersten Flug",
+  updated: "2026-01-30",
+  intro:
+    "Kurz-Check vor dem Start. Diese App ersetzt keine Rechtsberatung. Im Zweifel gelten immer die offiziellen Quellen.",
+  sections: [
+    {
+      id: "easa",
+      title: "1) Kategorie & Basisregeln (EASA / Open Category)",
+      items: [
+        { type: "text", text: "Max. 120 m über Grund/Meer, VLOS (Sichtkontakt), keine riskanten Manöver über Menschenansammlungen." },
+        { type: "text", text: "Die Open Category deckt typische Foto-/Reiseflüge ab (Drohnen < 25 kg). Je nach Drohne/Unterkategorie können Online-Test/Kompetenznachweise nötig sein." },
+        { type: "link", text: "Offiziell: Drone rules (island.is)", url: "https://island.is/en/drone-rules" },
+        { type: "link", text: "Offiziell: Open Category (island.is)", url: "https://island.is/en/open-category" }
+      ]
+    },
+    {
+      id: "registration",
+      title: "2) Registrierung (Operator-ID)",
+      items: [
+        { type: "text", text: "Wenn du bereits in einem anderen EASA-Land als Operator registriert bist: nicht doppelt registrieren. Operator-ID am Fluggerät anbringen." },
+        { type: "link", text: "Registrierung/Portal: flydrone.is", url: "https://flydrone.is/" }
+      ]
+    },
+    {
+      id: "maps",
+      title: "3) Kartencheck: Zonen & Schutzgebiete",
+      items: [
+        { type: "text", text: "Vor Ort prüfen: Aviation-Zonen, temporäre Einschränkungen (Rettung/Events) und Schutzgebiete. Karten sind Orientierung – dein Blick bleibt Pflicht." },
+        { type: "link", text: "Iceland Drone Map (island.is)", url: "https://island.is/en/drone-map" },
+        { type: "link", text: "UST FAQ: Drones in protected areas", url: "https://ust.is/english/visiting-iceland/faq/" }
+      ]
+    },
+    {
+      id: "protected",
+      title: "4) Schutzgebiete & Wildlife",
+      items: [
+        { type: "text", text: "In Schutzgebieten gelten oft Zusatzregeln (auch saisonal). Manche Bereiche sind für Freizeitdrohnen zeitweise komplett tabu." },
+        { type: "text", text: "Wenn Tiere reagieren: sofort Höhe/Distanz ändern oder abbrechen. Ruhe ist hier mehr wert als ein Clip." },
+        { type: "link", text: "Vatnajökull NP: Drone rules", url: "https://www.vatnajokulsthjodgardur.is/en/thenationalpark/drone-rules" },
+        { type: "link", text: "Nattúra: Regeln & Einschränkungen (Übersicht)", url: "https://www.nattura.is/stofnunin/reglur-um-notkun-drona-i-afthreyingarskyni" }
+      ]
+    },
+    {
+      id: "insurance",
+      title: "5) Versicherung & Verantwortung",
+      items: [
+        { type: "text", text: "Haftpflicht ist je nach Drohnengewicht/Nutzungsszenario relevant – und in der Praxis immer klug. Für Reisen: Nachweis (englisch) dabei haben." },
+        { type: "text", text: "Privatsphäre respektieren: Menschen/Häuser nicht ungefragt filmen. Lieber ein Bild weniger als Ärger mehr." }
+      ]
+    },
+    {
+      id: "checklist",
+      title: "6) 30-Sekunden-Checkliste",
+      items: [
+        { type: "text", text: "Wind/Böen ok? (Island: Böen sind der Endgegner). Return-to-Home Höhe sinnvoll? GNSS/Homepoint sitzt?" },
+        { type: "text", text: "Start-/Landefläche: keine losen Steine/Grassoden (Propwash), keine Menschen im Rücken." },
+        { type: "text", text: "Wenn irgendwas „komisch“ ist: nicht diskutieren – nicht starten." }
+      ]
+    }
+  ]
+};
+
+// UI: Button + Modal (minimal-invasiv)
+(function () {
+  const BTN_ID = "btnPreflight";
+  const MODAL_ID = "preflightModal";
+  const BACKDROP_ID = "preflightBackdrop";
+
+  function _escape(s) {
+    try { return escapeHtml(s); } catch (_) {}
+    return String(s)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  function _buildModalHTML() {
+    const info = PREFLIGHT_INFO || {};
+    const title = _escape(info.title || "Vor dem ersten Flug");
+    const intro = _escape(info.intro || "");
+    const updated = _escape(info.updated || "");
+
+    const sections = Array.isArray(info.sections) ? info.sections : [];
+    const secHtml = sections.map((sec) => {
+      const st = _escape(sec && sec.title ? sec.title : "");
+      const items = Array.isArray(sec && sec.items) ? sec.items : [];
+      const li = items.map((it) => {
+        if (!it) return "";
+        if (it.type === "link" && it.url) {
+          const text = _escape(it.text || it.url);
+          const url = String(it.url);
+          return `<li style="margin:6px 0; line-height:1.35;">
+            <a href="${_escape(url)}" target="_blank" rel="noopener noreferrer"
+               style="color:inherit; text-decoration:underline; text-underline-offset:3px; opacity:.95;">
+              ${text}
+            </a>
+          </li>`;
+        }
+        const t = _escape(it.text || "");
+        return `<li style="margin:6px 0; line-height:1.35; opacity:.95;">${t}</li>`;
+      }).join("");
+
+      return `
+        <div style="margin-top:14px;">
+          <div style="font-weight:800; font-size:14px; margin-bottom:6px;">${st}</div>
+          <ul style="margin:0; padding-left:18px; opacity:.95;">
+            ${li}
+          </ul>
+        </div>
+      `;
+    }).join("");
+
+    return `
+      <div id="${MODAL_ID}" role="dialog" aria-modal="true"
+           style="position:fixed; inset: 0; z-index: 99999; display:flex; align-items:center; justify-content:center; padding:18px;">
+        <div id="${BACKDROP_ID}" style="position:absolute; inset:0; background: rgba(0,0,0,0.62); backdrop-filter: blur(2px);"></div>
+
+        <div style="position:relative; width:min(860px, 92vw); max-height: min(82vh, 720px);
+                    overflow:auto; border-radius:16px; border: 1px solid rgba(255,255,255,0.14);
+                    background: rgba(20,20,20,0.92); color: inherit; box-shadow: 0 18px 60px rgba(0,0,0,0.45);
+                    padding: 14px 14px 16px;">
+          <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px;">
+            <div>
+              <div style="font-weight:900; font-size:18px; letter-spacing:.2px;">${title}</div>
+              <div style="margin-top:4px; opacity:.8; line-height:1.35; font-size:13px;">${intro}</div>
+              ${updated ? `<div style="margin-top:6px; opacity:.55; font-size:12px;">Stand: ${updated}</div>` : ""}
+            </div>
+
+            <button type="button" id="preflightClose"
+              style="flex:0 0 auto; padding:8px 10px; border-radius:12px; border:1px solid rgba(255,255,255,0.16);
+                     background: rgba(255,255,255,0.08); color: inherit; cursor:pointer;">
+              Schließen ✕
+            </button>
+          </div>
+
+          ${secHtml}
+
+          <div style="margin-top:14px; opacity:.65; font-size:12px; line-height:1.35;">
+            Hinweis: Regeln können sich ändern, lokal/temporär abweichen (Rettung, Events, Wildlife). Im Zweifel: nicht fliegen.
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function _openModal() {
+    try {
+      if (document.getElementById(MODAL_ID)) return;
+
+      // lock scroll behind
+      try {
+        const b = document.body;
+        if (b) {
+          b.dataset._preflightOverflow = b.style.overflow || "";
+          b.style.overflow = "hidden";
+        }
+      } catch (_) {}
+
+      const wrap = document.createElement("div");
+      wrap.innerHTML = _buildModalHTML();
+      const modal = wrap.firstElementChild;
+      if (!modal) return;
+      document.body.appendChild(modal);
+
+      const closeBtn = document.getElementById("preflightClose");
+      const backdrop = document.getElementById(BACKDROP_ID);
+
+      function _close() {
+        try {
+          const m = document.getElementById(MODAL_ID);
+          if (m && m.parentNode) m.parentNode.removeChild(m);
+        } catch (_) {}
+
+        try {
+          const b = document.body;
+          if (b) b.style.overflow = (b.dataset._preflightOverflow || "");
+          if (b) delete b.dataset._preflightOverflow;
+        } catch (_) {}
+
+        try { document.removeEventListener("keydown", _onKey, true); } catch (_) {}
+      }
+
+      function _onKey(ev) {
+        try {
+          if (!ev) return;
+          const k = ev.key || ev.code || "";
+          if (k === "Escape" || k === "Esc") {
+            ev.preventDefault();
+            _close();
+          }
+        } catch (_) {}
+      }
+
+      if (closeBtn) closeBtn.addEventListener("click", (e) => { try { e.preventDefault(); } catch (_) {} _close(); }, { passive: false });
+      if (backdrop) backdrop.addEventListener("click", (e) => { try { e.preventDefault(); } catch (_) {} _close(); }, { passive: false });
+
+      document.addEventListener("keydown", _onKey, true);
+    } catch (_) {}
+  }
+
+  function _ensureButton() {
+    try {
+      if (document.getElementById(BTN_ID)) return;
+
+      const btn = document.createElement("button");
+      btn.id = BTN_ID;
+      btn.type = "button";
+      btn.textContent = (PREFLIGHT_INFO && PREFLIGHT_INFO.title) ? PREFLIGHT_INFO.title : "Vor dem ersten Flug";
+      btn.style.padding = "8px 12px";
+      btn.style.borderRadius = "12px";
+      btn.style.border = "1px solid rgba(255,255,255,0.14)";
+      btn.style.background = "rgba(255,255,255,0.06)";
+      btn.style.color = "inherit";
+      btn.style.cursor = "pointer";
+      btn.style.pointerEvents = "auto";
+      btn.style.touchAction = "manipulation";
+
+      btn.addEventListener("click", (ev) => {
+        try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
+        _openModal();
+      }, { passive: false });
+
+      // Insert location: above the first "Aviation Kontext ..." button, else after map, else after windBox/detail.
+      let inserted = false;
+
+      try {
+        const buttons = Array.from(document.querySelectorAll("button"));
+        const aviBtn = buttons.find(b => (b.textContent || "").trim().toLowerCase().startsWith("aviation kontext"));
+        if (aviBtn && aviBtn.parentNode) {
+          aviBtn.parentNode.insertBefore(btn, aviBtn);
+          inserted = true;
+        }
+      } catch (_) {}
+
+      if (!inserted) {
+        try {
+          const mapEl = document.getElementById("map");
+          if (mapEl && mapEl.parentNode) {
+            if (mapEl.nextSibling) mapEl.parentNode.insertBefore(btn, mapEl.nextSibling);
+            else mapEl.parentNode.appendChild(btn);
+            inserted = true;
+          }
+        } catch (_) {}
+      }
+
+      if (!inserted) {
+        try {
+          const anchor = document.getElementById("windBox") || document.getElementById("detail") || document.body;
+          if (anchor && anchor.parentNode) {
+            anchor.parentNode.insertBefore(btn, anchor.nextSibling);
+            inserted = true;
+          }
+        } catch (_) {}
+      }
+
+      if (!inserted) {
+        try { document.body.appendChild(btn); } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  // UI is built dynamically by the app; wait a moment and retry a few times.
+  (function _deferEnsure() {
+    let tries = 0;
+    const maxTries = 20; // ~10s total (500ms steps)
+    const tick = () => {
+      tries += 1;
+      _ensureButton();
+      if (document.getElementById(BTN_ID)) return; // inserted successfully
+      if (tries >= maxTries) return;
+      setTimeout(tick, 500);
+    };
+    setTimeout(tick, 800);
+  })();
+})();
