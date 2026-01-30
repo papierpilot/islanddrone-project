@@ -1,12 +1,12 @@
 // sw.js — Island Drone Project
 // Robust, simple cache-first shell + network fallback + cache bump
 
-const CACHE_NAME = "islanddrone-ampel-v19"; // <- bei Updates hochzählen!
+const CACHE_NAME = "islanddrone-ampel-v20"; // <- neue Version
 
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./app.js?v=19",
+  "./app.js",              // <-- wichtig: ohne ?v=
   "./manifest.webmanifest",
   "./splash.jpg",
   "./sw.js"
