@@ -1430,6 +1430,446 @@ document.addEventListener("DOMContentLoaded", () => {
   try { windEnsureUI(); } catch (_) {}
 });
 
+
+// =============================
+// IMO / vedur.is – "Now & Next" für Drohnenpiloten (additiv)
+// Ziel: Regen, Wind, Nebel/Sicht + Warnungen (CAP) am Standort
+// - reine Client-side fetch()
+// - keine Speicherung/Tracking
+// - Attribution sichtbar
+// Quellen (Open Data): https://api.vedur.is/weather/openapi.json & https://api.vedur.is/cap/v1/openapi.json
+// =============================
+
+const IMO_WEATHER_BASE = "https://api.vedur.is/weather";
+const IMO_CAP_BASE = "https://api.vedur.is/cap/v1";
+const IMO_SRID = 4326;
+
+// "Leise" Limits: nicht spammen, aber reaktionsschnell genug fürs Pin-Dragging
+const IMO_THROTTLE_MS = 15_000;
+const IMO_CAP_DISTANCE_KM = 220;    // groß genug für Küsten-Regionen, klein genug für Kontext
+
+let imoHooksInstalled = false;
+let imoLastFetchAt = 0;
+let imoLastKey = "";
+
+// Station-Cache (nur im RAM; keine Persistenz)
+let imoStationsCache = null;        // Array<Station>
+let imoStationsFetchedAt = 0;
+const IMO_STATIONS_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+
+function imoEnsureUI() {
+  if (document.getElementById("imoBox")) return;
+
+  const box = document.createElement("div");
+  box.id = "imoBox";
+  box.style.marginTop = "10px";
+  box.style.padding = "10px";
+  box.style.borderRadius = "10px";
+  box.style.border = "1px solid rgba(255,255,255,0.08)";
+  box.style.background = "rgba(0,0,0,0.25)";
+  box.style.color = "inherit";
+
+  box.innerHTML = `
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+      <div style="font-weight:700;">IMO – Now & Next</div>
+      <div style="opacity:.65; font-size:12px;">Data: IMO / vedur.is</div>
+    </div>
+
+    <div style="margin-top:6px; opacity:.9; font-size:13px; line-height:1.35;">
+      <div id="imoNow" style="margin-top:4px;">—</div>
+      <div id="imoNext" style="margin-top:6px;">—</div>
+      <div id="imoAlerts" style="margin-top:8px;">—</div>
+    </div>
+
+    <div style="margin-top:8px; opacity:.65; font-size:12px; line-height:1.25;">
+      NOW = nächste Messstation(en) (AWS). NEXT = Kurztrend aus den letzten ~60 Minuten (kein Modell).
+    </div>
+  `;
+
+  // Unter Wind-Box einhängen (wie im Screenshot gewünscht)
+  const wind = document.getElementById("windBox");
+  if (wind && wind.parentNode) {
+    wind.parentNode.insertBefore(box, wind.nextSibling);
+    return;
+  }
+
+  // Fallback, falls Wind-Box (noch) nicht existiert
+  const anchor = document.getElementById("detail") || document.getElementById("state") || document.body;
+  anchor.parentNode.insertBefore(box, anchor.nextSibling);
+}
+
+function imoFmt(num, digits = 1) {
+  if (num === null || num === undefined || Number.isNaN(Number(num))) return "—";
+  return Number(num).toFixed(digits);
+}
+
+function imoPick(obj, keys) {
+  if (!obj) return undefined;
+  for (const k of keys) {
+    if (Object.prototype.hasOwnProperty.call(obj, k) && obj[k] !== null && obj[k] !== undefined) return obj[k];
+  }
+  return undefined;
+}
+
+function imoCompassFromDeg(deg) {
+  if (deg === null || deg === undefined || Number.isNaN(Number(deg))) return "—";
+  const dirs = ["N","NNO","NO","ONO","O","OSO","SO","SSO","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+  const d = ((Number(deg) % 360) + 360) % 360;
+  return dirs[Math.round(d / 22.5) % 16];
+}
+
+function imoHaversineKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const toRad = (x) => (x * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+}
+
+async function imoFetchStations() {
+  const now = Date.now();
+  if (imoStationsCache && (now - imoStationsFetchedAt) < IMO_STATIONS_TTL_MS) return imoStationsCache;
+
+  // AWS-Stationen (Automatic stations = sj), aktiv
+  const url = `${IMO_WEATHER_BASE}/stations?active=true&station_type=sj`;
+  const res = await fetch(url, { cache: "no-cache" });
+  if (!res.ok) throw new Error(`IMO stations HTTP ${res.status}`);
+  const stations = await res.json();
+
+  imoStationsCache = Array.isArray(stations) ? stations : [];
+  imoStationsFetchedAt = now;
+  return imoStationsCache;
+}
+
+function imoNearestStations(lat, lon, stations, n = 3) {
+  const arr = [];
+  for (const s of (stations || [])) {
+    const slat = s?.lat ?? s?.latitude;
+    const slon = s?.lon ?? s?.longitude;
+    if (typeof slat !== "number" || typeof slon !== "number") continue;
+    const dist = imoHaversineKm(lat, lon, slat, slon);
+    arr.push({ station: s, distKm: dist });
+  }
+  arr.sort((a,b) => a.distKm - b.distKm);
+  return arr.slice(0, n);
+}
+
+async function imoFetchLatest10min(stationIds) {
+  const params = new URLSearchParams();
+  for (const id of stationIds) params.append("station_id", String(id));
+  params.set("fields", "basic"); // genügt für Apps/Dashboards laut API
+  const url = `${IMO_WEATHER_BASE}/observations/aws/10min/latest?${params.toString()}`;
+  const res = await fetch(url, { cache: "no-cache" });
+  if (!res.ok) throw new Error(`IMO aws latest HTTP ${res.status}`);
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
+}
+
+async function imoFetchRecent10min(stationId, count = 6) {
+  // letzte ~60 min (6×10min), DESC
+  const params = new URLSearchParams();
+  params.append("station_id", String(stationId));
+  params.set("fields", "basic");
+  params.set("count", String(count));
+  params.set("order", "desc");
+  const url = `${IMO_WEATHER_BASE}/observations/aws/10min?${params.toString()}`;
+  const res = await fetch(url, { cache: "no-cache" });
+  if (!res.ok) throw new Error(`IMO aws series HTTP ${res.status}`);
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
+}
+
+function imoExtractCore(obs) {
+  // Robust gegen unterschiedliche Feldnamen (IMO nutzt teils Kurz-Codes)
+  const wind = imoPick(obs, ["f","ff","wind_speed","windspeed","ws"]);
+  const gust = imoPick(obs, ["fg","fx","gust","wind_gust","wind_speed_of_gust"]);
+  const dirDeg = imoPick(obs, ["d","dd","dir","wind_direction","wd"]);
+  const precip = imoPick(obs, ["r","rr","precip","precipitation","rain","r_1h","r1h"]);
+  const vis = imoPick(obs, ["vis","visibility","sight","view"]);
+  const rh = imoPick(obs, ["rh","humidity","relative_humidity"]);
+  const t = imoPick(obs, ["t","temp","temperature","air_temperature"]);
+  const ts = imoPick(obs, ["time","datetime","date","timi","obs_time","at"]);
+  return { wind, gust, dirDeg, precip, vis, rh, t, ts };
+}
+
+function imoFogHeuristic(core) {
+  // Wenn Sichtweite da ist: direkt
+  if (core.vis !== undefined) {
+    const v = Number(core.vis);
+    if (!Number.isNaN(v)) {
+      if (v < 1000) return "sehr wahrscheinlich";
+      if (v < 3000) return "möglich";
+      return "unwahrscheinlich";
+    }
+  }
+  // Heuristik ohne Sichtweite: hohe Feuchte + wenig Wind
+  const rh = Number(core.rh);
+  const w = Number(core.wind);
+  if (!Number.isNaN(rh) && !Number.isNaN(w)) {
+    if (rh >= 97 && w <= 3) return "möglich";
+    if (rh >= 93 && w <= 2) return "leicht möglich";
+  }
+  return "—";
+}
+
+function imoTrendLabel(series, keyName) {
+  // series ist DESC (neu -> alt)
+  if (!Array.isArray(series) || series.length < 2) return "—";
+  const newest = imoExtractCore(series[0])[keyName];
+  const oldest = imoExtractCore(series[series.length - 1])[keyName];
+  const a = Number(newest);
+  const b = Number(oldest);
+  if (Number.isNaN(a) || Number.isNaN(b)) return "—";
+  const delta = a - b;
+
+  // kleine toter Bereich
+  const eps = (keyName === "wind" || keyName === "gust") ? 0.6 : 0.2;
+  if (Math.abs(delta) <= eps) return "↔ stabil";
+  return delta > 0 ? "↗ zunehmend" : "↘ abnehmend";
+}
+
+function imoRenderNowNext({ nearest, latestByStationId, seriesMain }) {
+  imoEnsureUI();
+  const nowEl = document.getElementById("imoNow");
+  const nextEl = document.getElementById("imoNext");
+  if (!nowEl || !nextEl) return;
+
+  if (!nearest || !nearest.length) {
+    nowEl.textContent = "NOW: Keine Stationen gefunden.";
+    nextEl.textContent = "NEXT: —";
+    return;
+  }
+
+  // NOW: Liste der nächsten Stationen (kompakt)
+  const lines = [];
+  for (const item of nearest) {
+    const s = item.station;
+    const sid = s?.id ?? s?.station_id;
+    const obs = latestByStationId.get(String(sid));
+    const core = obs ? imoExtractCore(obs) : null;
+
+    const wind = core ? imoFmt(core.wind, 1) : "—";
+    const gust = core ? imoFmt(core.gust, 1) : "—";
+    const dir = core ? `${imoCompassFromDeg(core.dirDeg)} (${core.dirDeg !== undefined ? Math.round(Number(core.dirDeg)) : "—"}°)` : "—";
+    const rain = core && core.precip !== undefined ? `${imoFmt(core.precip, 1)} mm` : "—";
+    const fog = core ? imoFogHeuristic(core) : "—";
+
+    const name = escapeHtml(s?.name ?? s?.station_name ?? `Station ${sid}`);
+    lines.push(`• <b>${name}</b> (${imoFmt(item.distKm, 1)} km): 💨 ${wind} m/s · 💥 ${gust} m/s · 🧭 ${escapeHtml(dir)} · 🌧️ ${rain} · 🌫️ ${escapeHtml(fog)}`);
+  }
+
+  nowEl.innerHTML = `<b>NOW</b> (Messstationen):<br/>${lines.join("<br/>")}`;
+
+  // NEXT: Trend aus den letzten ~60 Minuten (nur Hauptstation = nächste)
+  if (!Array.isArray(seriesMain) || !seriesMain.length) {
+    nextEl.innerHTML = `<b>NEXT</b> (Trend ~60 min): —`;
+    return;
+  }
+  const coreNow = imoExtractCore(seriesMain[0]);
+  const windTrend = imoTrendLabel(seriesMain, "wind");
+  const rainTrend = imoTrendLabel(seriesMain, "precip");
+  const fog = imoFogHeuristic(coreNow);
+
+  // "im Gleich": Wenn Wind ↑ oder Regen ↑ oder Nebel wahrscheinlich -> das ist dein Entscheidungsfeind
+  nextEl.innerHTML =
+    `<b>NEXT</b> (Trend ~60 min, keine Modellprognose): ` +
+    `💨 ${windTrend} · 🌧️ ${rainTrend} · 🌫️ ${escapeHtml(fog)}`;
+}
+
+function _imoColorBadge(color) {
+  const c = String(color || "").toLowerCase();
+  let dot = "⚪";
+  if (c.includes("yellow")) dot = "🟡";
+  if (c.includes("orange")) dot = "🟠";
+  if (c.includes("red")) dot = "🔴";
+  if (c.includes("green")) dot = "🟢";
+  return dot;
+}
+
+async function imoFetchNearbyAlertIds(lat, lon) {
+  const url = `${IMO_CAP_BASE}/lat/${lat}/long/${lon}/srid/${IMO_SRID}/distance/${IMO_CAP_DISTANCE_KM}/`;
+  const res = await fetch(url, { cache: "no-cache" });
+  if (!res.ok) throw new Error(`IMO CAP HTTP ${res.status}`);
+  return await res.json(); // GenericCapMessages
+}
+
+async function imoFetchAlertJson(msg) {
+  const sender = encodeURIComponent(msg.sender);
+  const identifier = encodeURIComponent(msg.identifier);
+  const sent = encodeURIComponent(msg.sent);
+  const url = `${IMO_CAP_BASE}/capbroker/sender/${sender}/identifier/${identifier}/sent/${sent}/json/`;
+  const res = await fetch(url, { cache: "no-cache" });
+  if (!res.ok) throw new Error(`IMO CAP msg HTTP ${res.status}`);
+  return await res.json(); // CapMessageJsonResponse
+}
+
+function imoRenderAlerts(capJson) {
+  imoEnsureUI();
+  const el = document.getElementById("imoAlerts");
+  if (!el) return;
+
+  if (!capJson) {
+    el.innerHTML = `<b>ALERTS</b>: Keine aktiven Warnungen im Umkreis.`;
+    return;
+  }
+
+  const infos = capJson?.alert?.info;
+  const arr = Array.isArray(infos) ? infos : [];
+  const en = arr.find(x => (x?.language || "").toLowerCase().startsWith("en")) || arr[0] || null;
+
+  if (!en) {
+    el.innerHTML = `<b>ALERTS</b>: Keine lesbaren Warn-Details.`;
+    return;
+  }
+
+  // Color steckt häufig in parameter/valueName=Color
+  let color = "";
+  try {
+    const p = en.parameter;
+    if (Array.isArray(p)) {
+      const c = p.find(x => (x?.valueName || "").toLowerCase() === "color");
+      color = c?.value || "";
+    } else if (p && typeof p === "object") {
+      color = p.value || "";
+    }
+  } catch (_) {}
+
+  const badge = _imoColorBadge(color);
+  const headline = en.headline || en.event || "Warning";
+  const desc = (en.description || "").trim();
+
+  el.innerHTML =
+    `<b>ALERTS</b>: ${badge} <b>${escapeHtml(headline)}</b>` +
+    `${color ? ` <span style="opacity:.75;">(${escapeHtml(color)})</span>` : ""}` +
+    (desc ? `<div style="margin-top:4px; opacity:.9;">${escapeHtml(desc).replace(/\n/g, "<br/>")}</div>` : "");
+}
+
+function imoRenderError() {
+  imoEnsureUI();
+  const nowEl = document.getElementById("imoNow");
+  const nextEl = document.getElementById("imoNext");
+  const alertEl = document.getElementById("imoAlerts");
+  if (nowEl) nowEl.textContent = "NOW: IMO-Daten aktuell nicht verfügbar.";
+  if (nextEl) nextEl.textContent = "NEXT: —";
+  if (alertEl) alertEl.textContent = "ALERTS: —";
+}
+
+async function imoUpdate(lat, lon, force = false) {
+  try {
+    imoEnsureUI();
+
+    const now = Date.now();
+    const key = `${lat.toFixed(3)},${lon.toFixed(3)}`;
+
+    if (!force) {
+      if (now - imoLastFetchAt < IMO_THROTTLE_MS) return;
+      if (key === imoLastKey && now - imoLastFetchAt < (IMO_THROTTLE_MS * 2)) return;
+    }
+
+    imoLastFetchAt = now;
+    imoLastKey = key;
+
+    // 1) Stations
+    const stations = await imoFetchStations();
+    const nearest = imoNearestStations(lat, lon, stations, 3);
+
+    // 2) Latest obs für die 3 Stationen
+    const ids = nearest.map(x => x.station?.id ?? x.station?.station_id).filter(x => x !== undefined && x !== null);
+    const latest = await imoFetchLatest10min(ids.map(Number));
+    const latestByStationId = new Map();
+    for (const o of latest) {
+      const sid = o?.station_id ?? o?.id ?? o?.station;
+      if (sid !== undefined && sid !== null) latestByStationId.set(String(sid), o);
+    }
+
+    // 3) Series für die nächste Station (Trend ~60 min)
+    let seriesMain = [];
+    if (ids.length) {
+      seriesMain = await imoFetchRecent10min(Number(ids[0]), 6);
+    }
+
+    imoRenderNowNext({ nearest, latestByStationId, seriesMain });
+
+    // 4) CAP Alerts
+    try {
+      const nearby = await imoFetchNearbyAlertIds(lat, lon);
+      const msgs = Array.isArray(nearby) ? nearby : (Array.isArray(nearby?.messages) ? nearby.messages : []);
+      if (!msgs.length) {
+        imoRenderAlerts(null);
+      } else {
+        const first = msgs[0];
+        if (first?.sender && first?.identifier && first?.sent) {
+          const capJson = await imoFetchAlertJson(first);
+          imoRenderAlerts(capJson);
+        } else {
+          imoRenderAlerts(null);
+        }
+      }
+    } catch (_) {
+      // Alerts sind nice-to-have: keine Panik in der UI
+      imoRenderAlerts(null);
+    }
+
+  } catch (_) {
+    imoRenderError();
+  }
+}
+
+function imoInstallHooks() {
+  if (imoHooksInstalled) return;
+  if (typeof marker === "undefined" || !marker) return;
+
+  imoEnsureUI();
+
+  const onMove = () => {
+    try {
+      const p = marker.getLatLng();
+      imoUpdate(p.lat, p.lng, false);
+    } catch (_) {}
+  };
+
+  try { marker.on("drag", onMove); } catch (_) {}
+  try { marker.on("dragend", onMove); } catch (_) {}
+
+  // updateMap hooken (GPS/Manual/Programmatic)
+  try {
+    if (typeof updateMap === "function" && !updateMap.__imoWrapped) {
+      const _u = updateMap;
+      const wrapped = function(lat, lon, accuracyMeters = null) {
+        const r = _u(lat, lon, accuracyMeters);
+        try { imoUpdate(lat, lon, true); } catch (_) {}
+        return r;
+      };
+      wrapped.__imoWrapped = true;
+      updateMap = wrapped;
+    }
+  } catch (_) {}
+
+  // initial
+  try {
+    const p = marker.getLatLng();
+    imoUpdate(p.lat, p.lng, true);
+  } catch (_) {}
+
+  imoHooksInstalled = true;
+}
+
+// warten bis marker existiert
+const imoWait = setInterval(() => {
+  if (typeof marker !== "undefined" && marker) {
+    imoInstallHooks();
+    clearInterval(imoWait);
+  }
+}, 250);
+
+// UI early
+document.addEventListener("DOMContentLoaded", () => {
+  try { imoEnsureUI(); } catch (_) {}
+});
+
+
 // =============================
 // SPOT-LAYER – 2 Modi (Piloten first)
 // 1) Drohnen-Spots (Default): Luftbildpotenzial, keine Aussage zur Flugerlaubnis
