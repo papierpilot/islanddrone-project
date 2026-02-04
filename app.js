@@ -1511,6 +1511,35 @@ function imoPick(obj, keys) {
   return undefined;
 }
 
+function imoDeepPick(obj, keys) {
+  if (!obj) return undefined;
+
+  // top-level
+  let v = imoPick(obj, keys);
+  if (v !== undefined) return v;
+
+  // common nests used by IMO APIs
+  const nests = ["observations", "observation", "data", "parameters", "values"];
+  for (const n of nests) {
+    const child = obj[n];
+    if (child && typeof child === "object") {
+      v = imoPick(child, keys);
+      if (v !== undefined) return v;
+
+      // sometimes values are arrays of {name,value} or similar
+      if (Array.isArray(child)) {
+        for (const item of child) {
+          v = imoPick(item, keys);
+          if (v !== undefined) return v;
+        }
+      }
+    }
+  }
+
+  return undefined;
+}
+
+
 function imoCompassFromDeg(deg) {
   if (deg === null || deg === undefined || Number.isNaN(Number(deg))) return "—";
   const dirs = ["N","NNO","NO","ONO","O","OSO","SO","SSO","S","SSW","SW","WSW","W","WNW","NW","NNW"];
@@ -1559,7 +1588,6 @@ function imoNearestStations(lat, lon, stations, n = 3) {
 async function imoFetchLatest10min(stationIds) {
   const params = new URLSearchParams();
   for (const id of stationIds) params.append("station_id", String(id));
-  params.set("fields", "basic"); // genügt für Apps/Dashboards laut API
   const url = `${IMO_WEATHER_BASE}/observations/aws/10min/latest?${params.toString()}`;
   const res = await fetch(url, { cache: "no-cache" });
   if (!res.ok) throw new Error(`IMO aws latest HTTP ${res.status}`);
@@ -1571,7 +1599,6 @@ async function imoFetchRecent10min(stationId, count = 6) {
   // letzte ~60 min (6×10min), DESC
   const params = new URLSearchParams();
   params.append("station_id", String(stationId));
-  params.set("fields", "basic");
   params.set("count", String(count));
   params.set("order", "desc");
   const url = `${IMO_WEATHER_BASE}/observations/aws/10min?${params.toString()}`;
@@ -1582,17 +1609,18 @@ async function imoFetchRecent10min(stationId, count = 6) {
 }
 
 function imoExtractCore(obs) {
-  // Robust gegen unterschiedliche Feldnamen (IMO nutzt teils Kurz-Codes)
-  const wind = imoPick(obs, ["f","ff","wind_speed","windspeed","ws"]);
-  const gust = imoPick(obs, ["fg","fx","gust","wind_gust","wind_speed_of_gust"]);
-  const dirDeg = imoPick(obs, ["d","dd","dir","wind_direction","wd"]);
-  const precip = imoPick(obs, ["r","rr","precip","precipitation","rain","r_1h","r1h"]);
-  const vis = imoPick(obs, ["vis","visibility","sight","view"]);
-  const rh = imoPick(obs, ["rh","humidity","relative_humidity"]);
-  const t = imoPick(obs, ["t","temp","temperature","air_temperature"]);
-  const ts = imoPick(obs, ["time","datetime","date","timi","obs_time","at"]);
+  // Robust gegen unterschiedliche Feldnamen & Verschachtelungen (IMO nutzt teils Kurz-Codes, teils nested objects)
+  const wind = imoDeepPick(obs, ["f","F","ff","FF","wind_speed","windSpeed","windspeed","ws","WS"]);
+  const gust = imoDeepPick(obs, ["fg","FG","fx","FX","gust","GUST","wind_gust","windGust","wind_speed_of_gust"]);
+  const dirDeg = imoDeepPick(obs, ["d","D","dd","DD","dir","DIR","wind_direction","windDirection","wd","WD"]);
+  const precip = imoDeepPick(obs, ["r","R","rr","RR","precip","precipitation","rain","r_1h","r1h","R1H"]);
+  const vis = imoDeepPick(obs, ["vis","VIS","visibility","Visibility","sight","view"]);
+  const rh = imoDeepPick(obs, ["rh","RH","humidity","relative_humidity","relativeHumidity"]);
+  const t = imoDeepPick(obs, ["t","T","temp","temperature","air_temperature","airTemperature"]);
+  const ts = imoDeepPick(obs, ["time","TIME","datetime","date","timi","obs_time","at","timestamp"]);
   return { wind, gust, dirDeg, precip, vis, rh, t, ts };
 }
+
 
 function imoFogHeuristic(core) {
   // Wenn Sichtweite da ist: direkt
@@ -1660,7 +1688,9 @@ function imoRenderNowNext({ nearest, latestByStationId, seriesMain }) {
     lines.push(`• <b>${name}</b> (${imoFmt(item.distKm, 1)} km): 💨 ${wind} m/s · 💥 ${gust} m/s · 🧭 ${escapeHtml(dir)} · 🌧️ ${rain} · 🌫️ ${escapeHtml(fog)}`);
   }
 
-  nowEl.innerHTML = `<b>NOW</b> (Messstationen):<br/>${lines.join("<br/>")}`;
+  const anyValues = lines.some(l => !l.includes("— m/s"));
+  const hint = anyValues ? "" : `<div style="margin-top:6px; opacity:.75;">Hinweis: IMO liefert für diese Station(en) gerade keine lesbaren Messwerte. (API-Feldnamen können variieren.)</div>`;
+  nowEl.innerHTML = `<b>NOW</b> (Messstationen):<br/>${lines.join("<br/>")}${hint}`;
 
   // NEXT: Trend aus den letzten ~60 Minuten (nur Hauptstation = nächste)
   if (!Array.isArray(seriesMain) || !seriesMain.length) {
