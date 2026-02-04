@@ -1449,11 +1449,6 @@ const IMO_THROTTLE_MS = 15_000;
 const IMO_CAP_DISTANCE_KM = 220;    // groß genug für Küsten-Regionen, klein genug für Kontext
 
 let imoHooksInstalled = false;
-
-let imoLatestAllCache = null;
-let imoLatestAllAt = 0;
-const IMO_LATEST_ALL_TTL_MS = 60_000; // 1 min cache, avoid heavy reload
-
 let imoLastFetchAt = 0;
 let imoLastKey = "";
 
@@ -1475,9 +1470,12 @@ function imoEnsureUI() {
   box.style.color = "inherit";
 
   box.innerHTML = `
-    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
-      <div style="font-weight:700;">IMO – Now & Next</div>
-      <div style="opacity:.65; font-size:12px;">Data: IMO / vedur.is</div>
+    <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:10px;">
+      <div>
+        <div style="font-weight:700;">IMO – Now & Next</div>
+        <div style="opacity:.65; font-size:12px; margin-top:2px;">Icelandic Meteorological Office (offizieller Wetterdienst Islands)</div>
+      </div>
+      <div style="opacity:.65; font-size:12px; white-space:nowrap;">Data: IMO / vedur.is</div>
     </div>
 
     <div style="margin-top:6px; opacity:.9; font-size:13px; line-height:1.35;">
@@ -1487,6 +1485,7 @@ function imoEnsureUI() {
     </div>
 
     <div style="margin-top:8px; opacity:.65; font-size:12px; line-height:1.25;">
+      Alle Werte stammen von automatischen IMO-Messstationen (AWS). ‚—‘ bedeutet: Sensor nicht vorhanden oder aktuell keine Daten.<br/>
       NOW = nächste Messstation(en) (AWS). NEXT = Kurztrend aus den letzten ~60 Minuten (kein Modell).
     </div>
   `;
@@ -1515,35 +1514,6 @@ function imoPick(obj, keys) {
   }
   return undefined;
 }
-
-function imoDeepPick(obj, keys) {
-  if (!obj) return undefined;
-
-  // top-level
-  let v = imoPick(obj, keys);
-  if (v !== undefined) return v;
-
-  // common nests used by IMO APIs
-  const nests = ["observations", "observation", "data", "parameters", "values"];
-  for (const n of nests) {
-    const child = obj[n];
-    if (child && typeof child === "object") {
-      v = imoPick(child, keys);
-      if (v !== undefined) return v;
-
-      // sometimes values are arrays of {name,value} or similar
-      if (Array.isArray(child)) {
-        for (const item of child) {
-          v = imoPick(item, keys);
-          if (v !== undefined) return v;
-        }
-      }
-    }
-  }
-
-  return undefined;
-}
-
 
 function imoCompassFromDeg(deg) {
   if (deg === null || deg === undefined || Number.isNaN(Number(deg))) return "—";
@@ -1580,9 +1550,9 @@ async function imoFetchStations() {
 function imoNearestStations(lat, lon, stations, n = 3) {
   const arr = [];
   for (const s of (stations || [])) {
-    const slat = Number(s?.lat ?? s?.latitude);
-    const slon = Number(s?.lon ?? s?.longitude);
-    if (!Number.isFinite(slat) || !Number.isFinite(slon)) continue;
+    const slat = s?.lat ?? s?.latitude;
+    const slon = s?.lon ?? s?.longitude;
+    if (typeof slat !== "number" || typeof slon !== "number") continue;
     const dist = imoHaversineKm(lat, lon, slat, slon);
     arr.push({ station: s, distKm: dist });
   }
@@ -1592,37 +1562,20 @@ function imoNearestStations(lat, lon, stations, n = 3) {
 
 async function imoFetchLatest10min(stationIds) {
   const params = new URLSearchParams();
-  if (Array.isArray(stationIds)) {
-    for (const id of stationIds) {
-      if (id === undefined || id === null || String(id) === "") continue;
-      params.append("station_id", String(id));
-    }
-  }
-  const qs = params.toString();
-  const url = `${IMO_WEATHER_BASE}/observations/aws/10min/latest${qs ? `?${qs}` : ""}`;
+  for (const id of stationIds) params.append("station_id", String(id));
+  params.set("fields", "basic"); // genügt für Apps/Dashboards laut API
+  const url = `${IMO_WEATHER_BASE}/observations/aws/10min/latest?${params.toString()}`;
   const res = await fetch(url, { cache: "no-cache" });
   if (!res.ok) throw new Error(`IMO aws latest HTTP ${res.status}`);
   const data = await res.json();
   return Array.isArray(data) ? data : [];
 }
 
-
-async function imoFetchLatest10minAll() {
-  const now = Date.now();
-  if (imoLatestAllCache && (now - imoLatestAllAt) < IMO_LATEST_ALL_TTL_MS) return imoLatestAllCache;
-  const url = `${IMO_WEATHER_BASE}/observations/aws/10min/latest`;
-  const res = await fetch(url, { cache: "no-cache" });
-  if (!res.ok) throw new Error(`IMO latestAll HTTP ${res.status}`);
-  const data = await res.json();
-  imoLatestAllCache = Array.isArray(data) ? data : [];
-  imoLatestAllAt = now;
-  return imoLatestAllCache;
-}
-
 async function imoFetchRecent10min(stationId, count = 6) {
   // letzte ~60 min (6×10min), DESC
   const params = new URLSearchParams();
   params.append("station_id", String(stationId));
+  params.set("fields", "basic");
   params.set("count", String(count));
   params.set("order", "desc");
   const url = `${IMO_WEATHER_BASE}/observations/aws/10min?${params.toString()}`;
@@ -1633,18 +1586,17 @@ async function imoFetchRecent10min(stationId, count = 6) {
 }
 
 function imoExtractCore(obs) {
-  // Robust gegen unterschiedliche Feldnamen & Verschachtelungen (IMO nutzt teils Kurz-Codes, teils nested objects)
-  const wind = imoDeepPick(obs, ["f","F","ff","FF","wind_speed","windSpeed","windspeed","ws","WS"]);
-  const gust = imoDeepPick(obs, ["fg","FG","fx","FX","gust","GUST","wind_gust","windGust","wind_speed_of_gust"]);
-  const dirDeg = imoDeepPick(obs, ["d","D","dd","DD","dir","DIR","wind_direction","windDirection","wd","WD"]);
-  const precip = imoDeepPick(obs, ["r","R","rr","RR","precip","precipitation","rain","r_1h","r1h","R1H"]);
-  const vis = imoDeepPick(obs, ["vis","VIS","visibility","Visibility","sight","view"]);
-  const rh = imoDeepPick(obs, ["rh","RH","humidity","relative_humidity","relativeHumidity"]);
-  const t = imoDeepPick(obs, ["t","T","temp","temperature","air_temperature","airTemperature"]);
-  const ts = imoDeepPick(obs, ["time","TIME","datetime","date","timi","obs_time","at","timestamp"]);
+  // Robust gegen unterschiedliche Feldnamen (IMO nutzt teils Kurz-Codes)
+  const wind = imoPick(obs, ["f","ff","wind_speed","windspeed","ws"]);
+  const gust = imoPick(obs, ["fg","fx","gust","wind_gust","wind_speed_of_gust"]);
+  const dirDeg = imoPick(obs, ["d","dd","dir","wind_direction","wd"]);
+  const precip = imoPick(obs, ["r","rr","precip","precipitation","rain","r_1h","r1h"]);
+  const vis = imoPick(obs, ["vis","visibility","sight","view"]);
+  const rh = imoPick(obs, ["rh","humidity","relative_humidity"]);
+  const t = imoPick(obs, ["t","temp","temperature","air_temperature"]);
+  const ts = imoPick(obs, ["time","datetime","date","timi","obs_time","at"]);
   return { wind, gust, dirDeg, precip, vis, rh, t, ts };
 }
-
 
 function imoFogHeuristic(core) {
   // Wenn Sichtweite da ist: direkt
@@ -1682,7 +1634,7 @@ function imoTrendLabel(series, keyName) {
   return delta > 0 ? "↗ zunehmend" : "↘ abnehmend";
 }
 
-function imoRenderNowNext({ nearest, latestByStationId, latestByName, seriesMain }) {
+function imoRenderNowNext({ nearest, latestByStationId, seriesMain }) {
   imoEnsureUI();
   const nowEl = document.getElementById("imoNow");
   const nextEl = document.getElementById("imoNext");
@@ -1698,12 +1650,8 @@ function imoRenderNowNext({ nearest, latestByStationId, latestByName, seriesMain
   const lines = [];
   for (const item of nearest) {
     const s = item.station;
-    const sid = s?.id ?? s?.station_id ?? s?.stationId;
-    let obs = latestByStationId.get(String(sid));
-    if (!obs && latestByName) {
-      const nm = (s?.name ?? s?.station_name ?? s?.stationName);
-      if (nm) obs = latestByName.get(String(nm).toLowerCase());
-    }
+    const sid = s?.id ?? s?.station_id;
+    const obs = latestByStationId.get(String(sid));
     const core = obs ? imoExtractCore(obs) : null;
 
     const wind = core ? imoFmt(core.wind, 1) : "—";
@@ -1716,9 +1664,7 @@ function imoRenderNowNext({ nearest, latestByStationId, latestByName, seriesMain
     lines.push(`• <b>${name}</b> (${imoFmt(item.distKm, 1)} km): 💨 ${wind} m/s · 💥 ${gust} m/s · 🧭 ${escapeHtml(dir)} · 🌧️ ${rain} · 🌫️ ${escapeHtml(fog)}`);
   }
 
-  const anyValues = lines.some(l => !l.includes("— m/s"));
-  const hint = anyValues ? "" : `<div style="margin-top:6px; opacity:.75;">Hinweis: IMO liefert für diese Station(en) gerade keine lesbaren Messwerte. (API-Feldnamen können variieren.)</div>`;
-  nowEl.innerHTML = `<b>NOW</b> (Messstationen):<br/>${lines.join("<br/>")}${hint}`;
+  nowEl.innerHTML = `<b>NOW</b> (Messstationen):<br/>${lines.join("<br/>")}`;
 
   // NEXT: Trend aus den letzten ~60 Minuten (nur Hauptstation = nächste)
   if (!Array.isArray(seriesMain) || !seriesMain.length) {
@@ -1834,42 +1780,21 @@ async function imoUpdate(lat, lon, force = false) {
     const nearest = imoNearestStations(lat, lon, stations, 3);
 
     // 2) Latest obs für die 3 Stationen
-    const ids = nearest
-      .map(x => x.station?.id ?? x.station?.station_id ?? x.station?.stationId)
-      .filter(x => x !== undefined && x !== null)
-      .map(x => String(x));
-
-    let latest = [];
-    try {
-      // zuerst gezielt (klein & schnell)
-      latest = await imoFetchLatest10min(ids);
-    } catch (_) {
-      latest = [];
-    }
-
-    // Fallback: unfiltered latest (größer), wenn das gezielte Mapping leer bleibt
-    if (!Array.isArray(latest) || latest.length === 0) {
-      try { latest = await imoFetchLatest10minAll(); } catch (_) { latest = []; }
-    }
-
+    const ids = nearest.map(x => x.station?.id ?? x.station?.station_id).filter(x => x !== undefined && x !== null);
+    const latest = await imoFetchLatest10min(ids.map(Number));
     const latestByStationId = new Map();
-    const latestByName = new Map();
-
-    for (const o of (Array.isArray(latest) ? latest : [])) {
-      const sid = o?.station_id ?? o?.stationId ?? o?.id ?? o?.station;
+    for (const o of latest) {
+      const sid = o?.station_id ?? o?.id ?? o?.station;
       if (sid !== undefined && sid !== null) latestByStationId.set(String(sid), o);
-
-      const nm = o?.name ?? o?.station_name ?? o?.stationName;
-      if (nm) latestByName.set(String(nm).toLowerCase(), o);
     }
 
     // 3) Series für die nächste Station (Trend ~60 min)
     let seriesMain = [];
     if (ids.length) {
-      seriesMain = await imoFetchRecent10min(ids[0], 6);
+      seriesMain = await imoFetchRecent10min(Number(ids[0]), 6);
     }
 
-    imoRenderNowNext({ nearest, latestByStationId, latestByName, seriesMain });
+    imoRenderNowNext({ nearest, latestByStationId, seriesMain });
 
     // 4) CAP Alerts
     try {
