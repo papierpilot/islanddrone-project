@@ -1546,9 +1546,9 @@ async function imoFetchStations() {
 function imoNearestStations(lat, lon, stations, n = 3) {
   const arr = [];
   for (const s of (stations || [])) {
-    const slat = s?.lat ?? s?.latitude;
-    const slon = s?.lon ?? s?.longitude;
-    if (typeof slat !== "number" || typeof slon !== "number") continue;
+    const slat = Number(s?.lat ?? s?.latitude);
+    const slon = Number(s?.lon ?? s?.longitude);
+    if (!Number.isFinite(slat) || !Number.isFinite(slon)) continue;
     const dist = imoHaversineKm(lat, lon, slat, slon);
     arr.push({ station: s, distKm: dist });
   }
@@ -1776,18 +1776,21 @@ async function imoUpdate(lat, lon, force = false) {
     const nearest = imoNearestStations(lat, lon, stations, 3);
 
     // 2) Latest obs für die 3 Stationen
-    const ids = nearest.map(x => x.station?.id ?? x.station?.station_id).filter(x => x !== undefined && x !== null);
-    const latest = await imoFetchLatest10min(ids.map(Number));
+    const ids = nearest
+      .map(x => x.station?.id ?? x.station?.station_id ?? x.station?.stationId)
+      .filter(x => x !== undefined && x !== null)
+      .map(x => String(x));
+    const latest = await imoFetchLatest10min(ids);
     const latestByStationId = new Map();
     for (const o of latest) {
-      const sid = o?.station_id ?? o?.id ?? o?.station;
+      const sid = o?.station_id ?? o?.stationId ?? o?.id ?? o?.station;
       if (sid !== undefined && sid !== null) latestByStationId.set(String(sid), o);
     }
 
     // 3) Series für die nächste Station (Trend ~60 min)
     let seriesMain = [];
     if (ids.length) {
-      seriesMain = await imoFetchRecent10min(Number(ids[0]), 6);
+      seriesMain = await imoFetchRecent10min(ids[0], 6);
     }
 
     imoRenderNowNext({ nearest, latestByStationId, seriesMain });
