@@ -1449,6 +1449,11 @@ const IMO_THROTTLE_MS = 15_000;
 const IMO_CAP_DISTANCE_KM = 220;    // groß genug für Küsten-Regionen, klein genug für Kontext
 
 let imoHooksInstalled = false;
+
+let imoLatestAllCache = null;
+let imoLatestAllAt = 0;
+const IMO_LATEST_ALL_TTL_MS = 60_000; // 1 min cache, avoid heavy reload
+
 let imoLastFetchAt = 0;
 let imoLastKey = "";
 
@@ -1587,12 +1592,31 @@ function imoNearestStations(lat, lon, stations, n = 3) {
 
 async function imoFetchLatest10min(stationIds) {
   const params = new URLSearchParams();
-  for (const id of stationIds) params.append("station_id", String(id));
-  const url = `${IMO_WEATHER_BASE}/observations/aws/10min/latest?${params.toString()}`;
+  if (Array.isArray(stationIds)) {
+    for (const id of stationIds) {
+      if (id === undefined || id === null || String(id) === "") continue;
+      params.append("station_id", String(id));
+    }
+  }
+  const qs = params.toString();
+  const url = `${IMO_WEATHER_BASE}/observations/aws/10min/latest${qs ? `?${qs}` : ""}`;
   const res = await fetch(url, { cache: "no-cache" });
   if (!res.ok) throw new Error(`IMO aws latest HTTP ${res.status}`);
   const data = await res.json();
   return Array.isArray(data) ? data : [];
+}
+
+
+async function imoFetchLatest10minAll() {
+  const now = Date.now();
+  if (imoLatestAllCache && (now - imoLatestAllAt) < IMO_LATEST_ALL_TTL_MS) return imoLatestAllCache;
+  const url = `${IMO_WEATHER_BASE}/observations/aws/10min/latest`;
+  const res = await fetch(url, { cache: "no-cache" });
+  if (!res.ok) throw new Error(`IMO latestAll HTTP ${res.status}`);
+  const data = await res.json();
+  imoLatestAllCache = Array.isArray(data) ? data : [];
+  imoLatestAllAt = now;
+  return imoLatestAllCache;
 }
 
 async function imoFetchRecent10min(stationId, count = 6) {
@@ -1658,7 +1682,7 @@ function imoTrendLabel(series, keyName) {
   return delta > 0 ? "↗ zunehmend" : "↘ abnehmend";
 }
 
-function imoRenderNowNext({ nearest, latestByStationId, seriesMain }) {
+function imoRenderNowNext({ nearest, latestByStationId, latestByName, seriesMain }) {
   imoEnsureUI();
   const nowEl = document.getElementById("imoNow");
   const nextEl = document.getElementById("imoNext");
@@ -1674,8 +1698,12 @@ function imoRenderNowNext({ nearest, latestByStationId, seriesMain }) {
   const lines = [];
   for (const item of nearest) {
     const s = item.station;
-    const sid = s?.id ?? s?.station_id;
-    const obs = latestByStationId.get(String(sid));
+    const sid = s?.id ?? s?.station_id ?? s?.stationId;
+    let obs = latestByStationId.get(String(sid));
+    if (!obs && latestByName) {
+      const nm = (s?.name ?? s?.station_name ?? s?.stationName);
+      if (nm) obs = latestByName.get(String(nm).toLowerCase());
+    }
     const core = obs ? imoExtractCore(obs) : null;
 
     const wind = core ? imoFmt(core.wind, 1) : "—";
@@ -1810,11 +1838,29 @@ async function imoUpdate(lat, lon, force = false) {
       .map(x => x.station?.id ?? x.station?.station_id ?? x.station?.stationId)
       .filter(x => x !== undefined && x !== null)
       .map(x => String(x));
-    const latest = await imoFetchLatest10min(ids);
+
+    let latest = [];
+    try {
+      // zuerst gezielt (klein & schnell)
+      latest = await imoFetchLatest10min(ids);
+    } catch (_) {
+      latest = [];
+    }
+
+    // Fallback: unfiltered latest (größer), wenn das gezielte Mapping leer bleibt
+    if (!Array.isArray(latest) || latest.length === 0) {
+      try { latest = await imoFetchLatest10minAll(); } catch (_) { latest = []; }
+    }
+
     const latestByStationId = new Map();
-    for (const o of latest) {
+    const latestByName = new Map();
+
+    for (const o of (Array.isArray(latest) ? latest : [])) {
       const sid = o?.station_id ?? o?.stationId ?? o?.id ?? o?.station;
       if (sid !== undefined && sid !== null) latestByStationId.set(String(sid), o);
+
+      const nm = o?.name ?? o?.station_name ?? o?.stationName;
+      if (nm) latestByName.set(String(nm).toLowerCase(), o);
     }
 
     // 3) Series für die nächste Station (Trend ~60 min)
@@ -1823,7 +1869,7 @@ async function imoUpdate(lat, lon, force = false) {
       seriesMain = await imoFetchRecent10min(ids[0], 6);
     }
 
-    imoRenderNowNext({ nearest, latestByStationId, seriesMain });
+    imoRenderNowNext({ nearest, latestByStationId, latestByName, seriesMain });
 
     // 4) CAP Alerts
     try {
