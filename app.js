@@ -1511,45 +1511,6 @@ function imoPick(obj, keys) {
   return undefined;
 }
 
-function imoNormId(x) {
-  if (x === undefined || x === null) return "";
-  return String(x).trim();
-}
-
-function imoStationKeyFromStationObj(s) {
-  // Stations endpoint can expose id variants: station / id / station_id / stationId
-  return imoNormId(s?.station ?? s?.id ?? s?.station_id ?? s?.stationId);
-}
-
-function imoStationKeyFromObs(o) {
-  // Observations payload uses "station" (numeric) in practice; keep fallbacks
-  return imoNormId(o?.station ?? o?.station_id ?? o?.stationId ?? o?.id);
-}
-
-function imoStationNameNorm(x) {
-  return String(x ?? "").trim().toLowerCase();
-}
-
-// Unfiltered latest cache (RAM only) – prevents spamming the large endpoint on pin drag
-let imoLatestAllCache = null;
-let imoLatestAllFetchedAt = 0;
-const IMO_LATEST_ALL_TTL_MS = 60_000;
-
-async function imoFetchLatest10minAll() {
-  const now = Date.now();
-  if (imoLatestAllCache && (now - imoLatestAllFetchedAt) < IMO_LATEST_ALL_TTL_MS) return imoLatestAllCache;
-
-  const url = `${IMO_WEATHER_BASE}/observations/aws/10min/latest`;
-  const res = await fetch(url, { cache: "no-cache" });
-  if (!res.ok) throw new Error(`IMO aws latest(all) HTTP ${res.status}`);
-  const data = await res.json();
-  imoLatestAllCache = Array.isArray(data) ? data : [];
-  imoLatestAllFetchedAt = now;
-  return imoLatestAllCache;
-}
-
-
-
 function imoCompassFromDeg(deg) {
   if (deg === null || deg === undefined || Number.isNaN(Number(deg))) return "—";
   const dirs = ["N","NNO","NO","ONO","O","OSO","SO","SSO","S","SSW","SW","WSW","W","WNW","NW","NNW"];
@@ -1596,55 +1557,50 @@ function imoNearestStations(lat, lon, stations, n = 3) {
 }
 
 async function imoFetchLatest10min(stationIds) {
-  // Try filtered request first. IMO docs use station_id, but payload often uses "station".
-  // We stay conservative and do NOT use fields=basic (it can drop the exact keys we need).
-  const ids = Array.isArray(stationIds) ? stationIds.map(String) : [];
-  if (!ids.length) return await imoFetchLatest10minAll();
+  // IMO liefert Observations typischerweise mit Feld "station" (z.B. 1350).
+  // Je nach Endpoint/Schema heißt der Query-Parameter "station" oder "station_id".
+  // Wir versuchen daher zuerst "station" (passt zu den Observations), und fallback auf "station_id".
+  const ids = (stationIds || []).map(x => String(x));
 
-  // 1) station_id filter
-  try {
+  const tryFetch = async (paramName) => {
     const params = new URLSearchParams();
-    for (const id of ids) params.append("station_id", String(id));
-    let url = `${IMO_WEATHER_BASE}/observations/aws/10min/latest?${params.toString()}`;
-    let res = await fetch(url, { cache: "no-cache" });
-    if (res.ok) {
-      const data = await res.json();
-      const arr = Array.isArray(data) ? data : [];
-      if (arr.length) return arr;
-    }
-  } catch (_) {}
+    for (const id of ids) params.append(paramName, id);
+    const url = `${IMO_WEATHER_BASE}/observations/aws/10min/latest?${params.toString()}`;
+    const res = await fetch(url, { cache: "no-cache" });
+    if (!res.ok) throw new Error(`IMO aws latest HTTP ${res.status}`);
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  };
 
-  // 2) fallback: station filter (some backends accept station=)
-  try {
-    const params = new URLSearchParams();
-    for (const id of ids) params.append("station", String(id));
-    let url = `${IMO_WEATHER_BASE}/observations/aws/10min/latest?${params.toString()}`;
-    let res = await fetch(url, { cache: "no-cache" });
-    if (res.ok) {
-      const data = await res.json();
-      const arr = Array.isArray(data) ? data : [];
-      if (arr.length) return arr;
-    }
-  } catch (_) {}
+  // 1) bevorzugt: station
+  const a = await tryFetch("station");
+  if (a.length) return a;
 
-  // 3) last resort: unfiltered latest (cached RAM) and filter client-side
-  const all = await imoFetchLatest10minAll();
-  const set = new Set(ids.map(String));
-  return all.filter(o => set.has(imoStationKeyFromObs(o)));
+  // 2) fallback: station_id
+  return await tryFetch("station_id");
 }
 
 async function imoFetchRecent10min(stationId, count = 6) {
-(stationId, count = 6) {
   // letzte ~60 min (6×10min), DESC
-  const params = new URLSearchParams();
-  params.append("station_id", String(stationId));
-  params.set("count", String(count));
-  params.set("order", "desc");
-  const url = `${IMO_WEATHER_BASE}/observations/aws/10min?${params.toString()}`;
-  const res = await fetch(url, { cache: "no-cache" });
-  if (!res.ok) throw new Error(`IMO aws series HTTP ${res.status}`);
-  const data = await res.json();
-  return Array.isArray(data) ? data : [];
+  // Auch hier: paramName kann "station" oder "station_id" sein → dual try.
+  const id = String(stationId);
+
+  const tryFetch = async (paramName) => {
+    const params = new URLSearchParams();
+    params.append(paramName, id);
+    params.set("count", String(count));
+    params.set("order", "desc");
+    const url = `${IMO_WEATHER_BASE}/observations/aws/10min?${params.toString()}`;
+    const res = await fetch(url, { cache: "no-cache" });
+    if (!res.ok) throw new Error(`IMO aws series HTTP ${res.status}`);
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  };
+
+  const a = await tryFetch("station");
+  if (a.length) return a;
+
+  return await tryFetch("station_id");
 }
 
 function imoExtractCore(obs) {
@@ -1712,18 +1668,8 @@ function imoRenderNowNext({ nearest, latestByStationId, seriesMain }) {
   const lines = [];
   for (const item of nearest) {
     const s = item.station;
-    const sid = imoStationKeyFromStationObj(s);
-    let obs = latestByStationId.get(String(sid));
-    if (!obs) {
-      // Name fallback (rare): if IDs drift between endpoints
-      const targetName = imoStationNameNorm(s?.name ?? s?.station_name ?? s?.stationName);
-      if (targetName) {
-        for (const o of latestByStationId.values()) {
-          const on = imoStationNameNorm(o?.name ?? o?.station_name ?? o?.stationName);
-          if (on && on === targetName) { obs = o; break; }
-        }
-      }
-    }
+    const sid = s?.station ?? s?.id ?? s?.station_id ?? s?.stationId;
+    const obs = latestByStationId.get(String(sid));
     const core = obs ? imoExtractCore(obs) : null;
 
     const wind = core ? imoFmt(core.wind, 1) : "—";
@@ -1853,13 +1799,13 @@ async function imoUpdate(lat, lon, force = false) {
 
     // 2) Latest obs für die 3 Stationen
     const ids = nearest
-      .map(x => imoStationKeyFromStationObj(x.station))
-      .filter(x => x)
+      .map(x => x.station?.station ?? x.station?.id ?? x.station?.station_id ?? x.station?.stationId)
+      .filter(x => x !== undefined && x !== null)
       .map(x => String(x));
     const latest = await imoFetchLatest10min(ids);
     const latestByStationId = new Map();
     for (const o of latest) {
-      const sid = imoStationKeyFromObs(o);
+      const sid = o?.station_id ?? o?.stationId ?? o?.id ?? o?.station;
       if (sid !== undefined && sid !== null) latestByStationId.set(String(sid), o);
     }
 
