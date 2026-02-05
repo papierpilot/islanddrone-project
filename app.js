@@ -1470,12 +1470,9 @@ function imoEnsureUI() {
   box.style.color = "inherit";
 
   box.innerHTML = `
-    <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:10px;">
-      <div>
-        <div style="font-weight:700;">IMO – Now & Next</div>
-        <div style="opacity:.65; font-size:12px; margin-top:2px;">Icelandic Meteorological Office (offizieller Wetterdienst Islands)</div>
-      </div>
-      <div style="opacity:.65; font-size:12px; white-space:nowrap;">Data: IMO / vedur.is</div>
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+      <div style="font-weight:700;">IMO – Now & Next</div>
+      <div style="opacity:.65; font-size:12px;">Data: IMO / vedur.is</div>
     </div>
 
     <div style="margin-top:6px; opacity:.9; font-size:13px; line-height:1.35;">
@@ -1485,7 +1482,6 @@ function imoEnsureUI() {
     </div>
 
     <div style="margin-top:8px; opacity:.65; font-size:12px; line-height:1.25;">
-      Alle Werte stammen von automatischen IMO-Messstationen (AWS). ‚—‘ bedeutet: Sensor nicht vorhanden oder aktuell keine Daten.<br/>
       NOW = nächste Messstation(en) (AWS). NEXT = Kurztrend aus den letzten ~60 Minuten (kein Modell).
     </div>
   `;
@@ -1550,9 +1546,9 @@ async function imoFetchStations() {
 function imoNearestStations(lat, lon, stations, n = 3) {
   const arr = [];
   for (const s of (stations || [])) {
-    const slat = s?.lat ?? s?.latitude;
-    const slon = s?.lon ?? s?.longitude;
-    if (typeof slat !== "number" || typeof slon !== "number") continue;
+    const slat = Number(s?.lat ?? s?.latitude);
+    const slon = Number(s?.lon ?? s?.longitude);
+    if (!Number.isFinite(slat) || !Number.isFinite(slon)) continue;
     const dist = imoHaversineKm(lat, lon, slat, slon);
     arr.push({ station: s, distKm: dist });
   }
@@ -1563,7 +1559,6 @@ function imoNearestStations(lat, lon, stations, n = 3) {
 async function imoFetchLatest10min(stationIds) {
   const params = new URLSearchParams();
   for (const id of stationIds) params.append("station_id", String(id));
-  params.set("fields", "basic"); // genügt für Apps/Dashboards laut API
   const url = `${IMO_WEATHER_BASE}/observations/aws/10min/latest?${params.toString()}`;
   const res = await fetch(url, { cache: "no-cache" });
   if (!res.ok) throw new Error(`IMO aws latest HTTP ${res.status}`);
@@ -1575,7 +1570,6 @@ async function imoFetchRecent10min(stationId, count = 6) {
   // letzte ~60 min (6×10min), DESC
   const params = new URLSearchParams();
   params.append("station_id", String(stationId));
-  params.set("fields", "basic");
   params.set("count", String(count));
   params.set("order", "desc");
   const url = `${IMO_WEATHER_BASE}/observations/aws/10min?${params.toString()}`;
@@ -1650,7 +1644,7 @@ function imoRenderNowNext({ nearest, latestByStationId, seriesMain }) {
   const lines = [];
   for (const item of nearest) {
     const s = item.station;
-    const sid = s?.id ?? s?.station_id;
+    const sid = s?.id ?? s?.station_id ?? s?.stationId;
     const obs = latestByStationId.get(String(sid));
     const core = obs ? imoExtractCore(obs) : null;
 
@@ -1780,18 +1774,21 @@ async function imoUpdate(lat, lon, force = false) {
     const nearest = imoNearestStations(lat, lon, stations, 3);
 
     // 2) Latest obs für die 3 Stationen
-    const ids = nearest.map(x => x.station?.id ?? x.station?.station_id).filter(x => x !== undefined && x !== null);
-    const latest = await imoFetchLatest10min(ids.map(Number));
+    const ids = nearest
+      .map(x => x.station?.id ?? x.station?.station_id ?? x.station?.stationId)
+      .filter(x => x !== undefined && x !== null)
+      .map(x => String(x));
+    const latest = await imoFetchLatest10min(ids);
     const latestByStationId = new Map();
     for (const o of latest) {
-      const sid = o?.station_id ?? o?.id ?? o?.station;
+      const sid = o?.station_id ?? o?.stationId ?? o?.id ?? o?.station;
       if (sid !== undefined && sid !== null) latestByStationId.set(String(sid), o);
     }
 
     // 3) Series für die nächste Station (Trend ~60 min)
     let seriesMain = [];
     if (ids.length) {
-      seriesMain = await imoFetchRecent10min(Number(ids[0]), 6);
+      seriesMain = await imoFetchRecent10min(ids[0], 6);
     }
 
     imoRenderNowNext({ nearest, latestByStationId, seriesMain });

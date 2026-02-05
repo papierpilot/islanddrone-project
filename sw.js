@@ -1,7 +1,8 @@
 // sw.js — Island Drone Project
 // Robust, simple cache-first shell + network fallback + cache bump
+// Patch: best-effort precache + request-based navigation caching
 
-const CACHE_NAME = "islanddrone-ampel-v26"; // <- neue Version
+const CACHE_NAME = "islanddrone-ampel-v27"; // <- neue Version (bei Deploy hochzählen)
 
 const APP_SHELL = [
   "./",
@@ -12,11 +13,25 @@ const APP_SHELL = [
   "./sw.js"
 ];
 
-// Install: cache app shell
+// Install: cache app shell (best effort; do NOT fail whole install if one file is missing temporarily)
 self.addEventListener("install", (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL))
-  );
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE_NAME);
+
+    await Promise.all(
+      APP_SHELL.map(async (path) => {
+        try {
+          const res = await fetch(path, { cache: "no-cache" });
+          if (res && res.ok) {
+            await cache.put(path, res);
+          }
+        } catch (_) {
+          // bewusst still: der SW soll trotzdem installieren
+        }
+      })
+    );
+  })());
+
   self.skipWaiting();
 });
 
@@ -56,10 +71,14 @@ self.addEventListener("fetch", (event) => {
       fetch(req)
         .then((res) => {
           const copy = res.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put("./index.html", copy));
+          // Cache exactly the requested navigation URL (more robust than "./index.html" only)
+          caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
           return res;
         })
-        .catch(() => caches.match("./index.html"))
+        .catch(() =>
+          // Try the exact request first, fallback to cached index.html
+          caches.match(req).then((r) => r || caches.match("./index.html"))
+        )
     );
     return;
   }
@@ -67,6 +86,7 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(
     caches.match(req).then((cached) => {
       if (cached) return cached;
+
       return fetch(req).then((res) => {
         // Cache successful basic responses
         if (res && res.ok && res.type === "basic") {
