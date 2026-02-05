@@ -2,7 +2,7 @@
 // Robust, simple cache-first shell + network fallback + cache bump
 // Patch: best-effort precache + request-based navigation caching
 
-const CACHE_NAME = "islanddrone-ampel-v27"; // <- neue Version (bei Deploy hochzählen)
+const CACHE_NAME = "islanddrone-ampel-v28"; // <- neue Version (bei Deploy hochzählen)
 
 const APP_SHELL = [
   "./",
