@@ -1441,6 +1441,9 @@ document.addEventListener("DOMContentLoaded", () => {
 // =============================
 
 const IMO_WEATHER_BASE = "https://api.vedur.is/weather";
+
+// Alias (Legacy): einige Funktionen nutzen noch IMO_API_WEATHER
+const IMO_API_WEATHER = IMO_WEATHER_BASE;
 const IMO_CAP_BASE = "https://api.vedur.is/cap/v1";
 const IMO_SRID = 4326;
 
@@ -1475,14 +1478,20 @@ function imoEnsureUI() {
       <div style="opacity:.65; font-size:12px;">Data: IMO / vedur.is</div>
     </div>
 
+    <div style="margin-top:6px; opacity:.75; font-size:12px; line-height:1.25;">
+      IMO-Daten basieren auf Open Data der isländischen Wetterbehörde (IMO / vedur.is) und werden direkt von api.vedur.is abgerufen (ohne Speicherung, ohne Tracking).
+    </div>
+
     <div style="margin-top:6px; opacity:.9; font-size:13px; line-height:1.35;">
       <div id="imoNow" style="margin-top:4px;">—</div>
       <div id="imoNext" style="margin-top:6px;">—</div>
       <div id="imoAlerts" style="margin-top:8px;">—</div>
     </div>
 
-    <div style="margin-top:8px; opacity:.65; font-size:12px; line-height:1.25;">
-      NOW = nächste Messstation(en) (AWS). NEXT = Kurztrend aus den letzten ~60 Minuten (kein Modell).
+    <div style="margin-top:10px; opacity:.65; font-size:12px; line-height:1.3;">
+      <b>NOW</b>: nächste automatische Messstation(en) (AWS) inkl. aktuellem Messwert.<br>
+      <b>NEXT</b>: Kurztrend der letzten ~60 Minuten aus 10‑Minuten‑Messungen (kein Modell) – zeigt, ob Wind/Böen eher zunehmen oder abnehmen.<br>
+      <b>ALERTS</b>: offizielle Warnungen (CAP) im Umkreis deines Standorts.
     </div>
   `;
 
@@ -1581,26 +1590,50 @@ async function imoFetchLatest10min(stationIds) {
 }
 
 async function imoFetchRecent10min(stationId, count = 6) {
-  // letzte ~60 min (6×10min), DESC
-  // Auch hier: paramName kann "station" oder "station_id" sein → dual try.
-  const id = String(stationId);
+  // NEXT: Kurztrend aus 10-Minuten-Observations.
+  // Wichtig: Diese Abfrage ist optional und darf niemals NOW kaputt machen.
+  // Laut IMO Weather OpenAPI nutzt AWS 10min die Parameter:
+  // - station_id (array/integer)
+  // - order (asc|desc)
+  // - count (max 12, wenn kein day_from/day_to gesetzt ist)
+  // Zeitstempel-Parameter wie from/to/time_from/time_to werden hier NICHT akzeptiert (führen zu 400).
 
-  const tryFetch = async (paramName) => {
-    const params = new URLSearchParams();
-    params.append(paramName, id);
-    params.set("count", String(count));
-    params.set("order", "desc");
-    const url = `${IMO_WEATHER_BASE}/observations/aws/10min?${params.toString()}`;
-    const res = await fetch(url, { cache: "no-cache" });
-    if (!res.ok) throw new Error(`IMO aws series HTTP ${res.status}`);
-    const data = await res.json();
-    return Array.isArray(data) ? data : [];
-  };
+  const sid = String(stationId ?? "").trim();
+  if (!sid) return [];
 
-  const a = await tryFetch("station");
-  if (a.length) return a;
+  const safeCount = Math.max(1, Math.min(12, Number(count) || 6));
 
-  return await tryFetch("station_id");
+  // Primär: processed 10min (stabiler für Dashboards)
+  // Fallback: raw 10min (unprocessed), falls processed nicht verfügbar ist.
+  const candidates = [
+    `${IMO_WEATHER_BASE}/observations/aws/10min?station_id=${encodeURIComponent(sid)}&order=desc&count=${encodeURIComponent(safeCount)}&parameters=basic`,
+    `${IMO_WEATHER_BASE}/observations/aws/raw/10min?station_id=${encodeURIComponent(sid)}&order=desc&count=${encodeURIComponent(safeCount)}&parameters=basic`
+  ];
+
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) continue;
+
+      const j = await res.json();
+      const arr = Array.isArray(j) ? j : (Array.isArray(j?.observations) ? j.observations : []);
+      if (!Array.isArray(arr) || !arr.length) return [];
+
+      // IMO liefert i.d.R. bereits sortiert, aber wir sortieren defensiv nach Zeitfeld.
+      const copy = arr.slice();
+      copy.sort((a, b) => {
+        const ta = Date.parse(a?.time ?? a?.created ?? a?.timestamp ?? "") || 0;
+        const tb = Date.parse(b?.time ?? b?.created ?? b?.timestamp ?? "") || 0;
+        return tb - ta;
+      });
+
+      return copy.slice(0, safeCount);
+    } catch (_) {
+      continue;
+    }
+  }
+
+  return [];
 }
 
 function imoExtractCore(obs) {
@@ -1810,9 +1843,14 @@ async function imoUpdate(lat, lon, force = false) {
     }
 
     // 3) Series für die nächste Station (Trend ~60 min)
+    // NEXT ist optional: darf NOW nicht killen.
     let seriesMain = [];
     if (ids.length) {
-      seriesMain = await imoFetchRecent10min(ids[0], 6);
+      try {
+        seriesMain = await imoFetchRecent10min(ids[0], 6);
+      } catch (_) {
+        seriesMain = [];
+      }
     }
 
     imoRenderNowNext({ nearest, latestByStationId, seriesMain });
