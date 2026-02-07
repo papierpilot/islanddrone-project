@@ -158,6 +158,32 @@
       .grid, .btnrow{ grid-template-columns: 1fr; }
       #map{ height: 240px; }
     }
+  
+    /* Daten & Transparenz (ohne JS, nur HTML/CSS) */
+    .privacy-footer{
+      position: fixed;
+      left: 0; right: 0; bottom: 0;
+      padding: 6px 10px;
+      z-index: 9999;
+      background: rgba(0,0,0,.65);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      font-size: 12px;
+    }
+    .privacy-details{
+      color:#fff;
+      max-width:700px;
+      margin: 0 auto;
+    }
+    .privacy-details summary{
+      cursor:pointer;
+      list-style:none;
+      opacity:.9;
+    }
+    .privacy-details summary::-webkit-details-marker{ display:none; }
+    .privacy-text{ margin-top: 8px; color:#fff; opacity:.95; }
+    .privacy-text p{ margin: 0 0 8px 0; }
+
   </style>
 </head>
 
@@ -165,7 +191,8 @@
   <div class="wrap">
     <div class="title">Drone Ampel · Island (Live)</div>
 
-    <div class="panel">
+    <div class="panel" data-panel-id="core" data-panel-collapsible="1">
+      <div data-panel-body>
       <div class="state warn" id="state">—</div>
       <div class="sub" id="detail">Bereit.</div>
 
@@ -177,9 +204,15 @@
       <div class="pill" id="expertPill">Expertenmodus: aus</div>
       <div class="pill">Quelle: WMS GetFeatureInfo</div>
 
-      <div class="mapwrap">
-        <div id="map"></div>
-      </div>
+      <div class="mapwrap" data-panel-id="map" data-panel-collapsible="1">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; border-bottom:1px solid rgba(255,255,255,.08);">
+          <div style="font-weight:700;">Karte</div>
+          <button type="button" data-panel-toggle="map" aria-label="Karte ein/ausklappen">▾</button>
+        </div>
+        <div data-panel-body>
+          <div id="map"></div>
+        </div>
+</div>
 
       <div class="btnrow" style="margin-top:12px">
         <button id="btnOverlayAvi">Aviation-Kontext anzeigen</button>
@@ -227,6 +260,7 @@
 
       <div class="small">
         Pro-Tipp: Klick in die Karte zeigt eine Detailabfrage (Aviation/Schutzgebiet) als Popup.
+      </div>
       </div>
     </div>
 

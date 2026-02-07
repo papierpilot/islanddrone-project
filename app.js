@@ -250,6 +250,16 @@ function initMap() {
     maxBoundsViscosity: 1.0,
   }).setView([startLat, startLon], MAP_DEFAULT_ZOOM);
 
+
+  // Collapsible panel integration (Map)
+  try{
+    window.__DA_LEAFLET_MAP__ = map;
+    if (window.__DA_PANEL__ && window.__DA_PANEL__.register){
+      const p = document.querySelector('[data-panel-id="map"][data-panel-collapsible="1"]');
+      if (p) window.__DA_PANEL__.register(p, "map", true);
+    }
+  }catch(_){}
+
   // Make map large on mobile
   applyResponsiveLayout();
 
@@ -1270,6 +1280,8 @@ function windEnsureUI() {
 
   const box = document.createElement("div");
   box.id = "windBox";
+  box.setAttribute("data-panel-id", "wind");
+  box.setAttribute("data-panel-collapsible", "1");
   box.style.marginTop = "10px";
   box.style.padding = "10px";
   box.style.borderRadius = "10px";
@@ -1278,13 +1290,23 @@ function windEnsureUI() {
   box.style.color = "inherit";
 
   box.innerHTML = `
-    <div style="font-weight:700;margin-bottom:6px;">Wind am Standort</div>
-    <div id="windValues" style="opacity:.95;">—</div>
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:6px;">
+      <div style="font-weight:700;">Wind am Standort</div>
+      <button type="button" data-panel-toggle="wind" aria-label="Wind Panel ein/ausklappen">▾</button>
+    </div>
+
+    <div data-panel-body>
+      <div id="windValues" style="opacity:.95;">—</div>
     <div id="windDJI" style="margin-top:6px;opacity:.95;">—</div>
     <div style="margin-top:6px;opacity:.65;font-size:12px;line-height:1.25;">
       Einschätzung basiert auf DJI-Referenzwerten (konservativ) & Modellwind (10 m). Lokale Effekte möglich.
     </div>
+  </div>
   `;
+
+  if (window.__DA_PANEL__ && window.__DA_PANEL__.register) {
+    window.__DA_PANEL__.register(box, "wind", true);
+  }
 
   const anchor = document.getElementById("detail") || document.getElementById("state") || document.body;
   anchor.parentNode.insertBefore(box, anchor.nextSibling);
@@ -1465,6 +1487,8 @@ function imoEnsureUI() {
 
   const box = document.createElement("div");
   box.id = "imoBox";
+  box.setAttribute("data-panel-id", "imo");
+  box.setAttribute("data-panel-collapsible", "1");
   box.style.marginTop = "10px";
   box.style.padding = "10px";
   box.style.borderRadius = "10px";
@@ -1475,8 +1499,13 @@ function imoEnsureUI() {
   box.innerHTML = `
     <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
       <div style="font-weight:700;">IMO – Now & Next</div>
-      <div style="opacity:.65; font-size:12px;">Data: IMO / vedur.is</div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <div style="opacity:.65; font-size:12px;">Data: IMO / vedur.is</div>
+        <button type="button" data-panel-toggle="imo" aria-label="IMO Panel ein/ausklappen">▾</button>
+      </div>
     </div>
+
+    <div data-panel-body>
 
     <div style="margin-top:6px; opacity:.75; font-size:12px; line-height:1.25;">
       IMO-Daten basieren auf Open Data der isländischen Wetterbehörde (IMO / vedur.is) und werden direkt von api.vedur.is abgerufen (ohne Speicherung, ohne Tracking).
@@ -1494,6 +1523,10 @@ function imoEnsureUI() {
       <b>ALERTS</b>: offizielle Warnungen (CAP) im Umkreis deines Standorts.
     </div>
   `;
+
+  if (window.__DA_PANEL__ && window.__DA_PANEL__.register) {
+    window.__DA_PANEL__.register(box, "imo", true);
+  }
 
   // Unter Wind-Box einhängen (wie im Screenshot gewünscht)
   const wind = document.getElementById("windBox");
@@ -1844,14 +1877,10 @@ async function imoUpdate(lat, lon, force = false) {
 
     // 3) Series für die nächste Station (Trend ~60 min)
     // NEXT ist optional: darf NOW nicht killen.
+    // WICHTIG: Einige Stationen liefern für die 10-Minuten-Serie (observations/aws/10min) 400.
+    // Das erzeugt DevTools-Fehler-Spam, obwohl wir es sauber catchen.
+    // Daher ist NEXT hier bewusst deaktiviert, bis wir eine verlässlich valide Serien-Abfrage haben.
     let seriesMain = [];
-    if (ids.length) {
-      try {
-        seriesMain = await imoFetchRecent10min(ids[0], 6);
-      } catch (_) {
-        seriesMain = [];
-      }
-    }
 
     imoRenderNowNext({ nearest, latestByStationId, seriesMain });
 
@@ -2468,6 +2497,8 @@ function _ensureSpotUI() {
 
   const box = document.createElement("div");
   box.id = "spotBox";
+  box.setAttribute("data-panel-id", "spot");
+  box.setAttribute("data-panel-collapsible", "1");
   box.style.marginTop = "10px";
   box.style.padding = "10px";
   box.style.borderRadius = "10px";
@@ -2478,11 +2509,15 @@ function _ensureSpotUI() {
   box.innerHTML = `
     <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
       <div style="font-weight:800;">Spot-Modus</div>
-      <div id="spotPill" style="padding:4px 10px; border-radius:999px; font-size:12px; border:1px solid rgba(255,255,255,0.12); opacity:.9;">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <div id="spotPill" style="padding:4px 10px; border-radius:999px; font-size:12px; border:1px solid rgba(255,255,255,0.12); opacity:.9;">
         —
+      </div>
+        <button type="button" data-panel-toggle="spot" aria-label="Spot Panel ein/ausklappen">▾</button>
       </div>
     </div>
 
+    <div data-panel-body>
     <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
       <button id="btnSpotDrone" type="button" style="padding:8px 10px; border-radius:10px; border:1px solid rgba(255,255,255,0.12); background:rgba(255,255,255,0.06); color:inherit; cursor:pointer;">
         ${_spotSafe(SPOT_MODES.drone.title)}
@@ -2499,7 +2534,12 @@ function _ensureSpotUI() {
     <div style="margin-top:6px; opacity:.65; font-size:12px; line-height:1.25;">
       Spots sind Inspiration/Orientierung. Keine Navigation, kein Routing, keine Google-Dienste.
     </div>
+  </div>
   `;
+
+  if (window.__DA_PANEL__ && window.__DA_PANEL__.register) {
+    window.__DA_PANEL__.register(box, "spot", true);
+  }
 
   const anchor = document.getElementById("windBox") || document.getElementById("detail") || document.body;
   anchor.parentNode.insertBefore(box, anchor.nextSibling);
@@ -3082,3 +3122,1978 @@ const PREFLIGHT_INFO = {
     setTimeout(tick, 800);
   })();
 })();
+// =============================
+// SUN / Tageslicht + Wetter-Zeitleiste (Open-Meteo) – additiv, minimal-invasiv
+// Ziel: Von Sonnenaufgang bis Sonnenuntergang eine stündliche Vorschau am Standort.
+// - Sonnenzeiten: lokal im Browser berechnet (keine externen Dienste nötig)
+// - Wetter (Icons): Open-Meteo hourly (frei), nur Anzeige, ohne Speicherung/Tracking
+// - UI: Box unter IMO-Box
+// =============================
+
+const SUN_TZ = "Atlantic/Reykjavik";
+const SUN_API_BASE = "https://api.open-meteo.com/v1/forecast";
+const SUN_THROTTLE_MS = 60_000;
+
+let sunHooksInstalled = false;
+let sunLastFetchAt = 0;
+let sunLastKey = "";
+let sunLastPayloadKey = "";
+let sunLastPayload = null;
+
+// Auto-Play (Slider folgt Uhr, pausiert bei User-Interaktion)
+let sunAutoTimer = null;
+let sunLastUserInteractAt = 0;
+let sunAutoLastIdx = -1;
+
+// --- Mini-Utils (leise) ---
+function sunClamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
+function sunPad2(n) { return String(n).padStart(2, "0"); }
+
+function sunParseISOToUTC(iso) {
+  try {
+    if (!iso || typeof iso !== "string") return new Date(NaN);
+    const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+    if (!m) return new Date(iso);
+    const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]), hh = Number(m[4]), mm = Number(m[5]);
+    return new Date(Date.UTC(y, mo - 1, d, hh, mm, 0));
+  } catch (_) {
+    return new Date(iso);
+  }
+}
+
+function sunFmtHHMM(date, tz = SUN_TZ) {
+  try {
+    const fmt = new Intl.DateTimeFormat("de-DE", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false });
+    return fmt.format(date);
+  } catch (_) {
+    // Fallback: lokale Zeit
+    return `${sunPad2(date.getHours())}:${sunPad2(date.getMinutes())}`;
+  }
+}
+
+function sunNowInTz(tz = SUN_TZ) {
+  try {
+    // "jetzt" als Datum, aber Tages-Komponenten in Ziel-TZ
+    const parts = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" })
+      .formatToParts(new Date())
+      .reduce((a, p) => (a[p.type] = p.value, a), {});
+    const y = Number(parts.year), m = Number(parts.month), d = Number(parts.day);
+    // Mitternacht in UTC für diesen TZ-Tag (wir rechnen später in UTC weiter)
+    return { y, m, d };
+  } catch (_) {
+    const n = new Date();
+    return { y: n.getFullYear(), m: n.getMonth() + 1, d: n.getDate() };
+  }
+}
+
+// --- Sonnenzeiten (NOAA-Algorithmus, ausreichend genau für Planung) ---
+function sunToRad(deg) { return (deg * Math.PI) / 180; }
+function sunToDeg(rad) { return (rad * 180) / Math.PI; }
+
+function sunCalcSunTimesUTC(lat, lon, y, m, d) {
+  // returns { sunrise: Date, sunset: Date } in UTC
+  // Algorithmus: NOAA Solar Calculator (vereinfachte Variante)
+  // https://gml.noaa.gov/grad/solcalc/ (Konzept), implementiert ohne externe Lib.
+  const J1970 = 2440588;
+  const J2000 = 2451545;
+
+  function toJulian(dateMs) { return dateMs / 86400000 - 0.5 + J1970; }
+  function fromJulian(j) { return new Date((j + 0.5 - J1970) * 86400000); }
+  function toDays(j) { return j - J2000; }
+
+  function rightAscension(l, b) {
+    const e = sunToRad(23.4397);
+    return Math.atan2(Math.sin(l) * Math.cos(e) - Math.tan(b) * Math.sin(e), Math.cos(l));
+  }
+  function declination(l, b) {
+    const e = sunToRad(23.4397);
+    return Math.asin(Math.sin(b) * Math.cos(e) + Math.cos(b) * Math.sin(e) * Math.sin(l));
+  }
+  function solarMeanAnomaly(d) { return sunToRad(357.5291 + 0.98560028 * d); }
+  function eclipticLongitude(M) {
+    const C = sunToRad(1.9148) * Math.sin(M) + sunToRad(0.02) * Math.sin(2 * M) + sunToRad(0.0003) * Math.sin(3 * M);
+    const P = sunToRad(102.9372);
+    return M + C + P + Math.PI;
+  }
+  function siderealTime(d, lw) { return sunToRad(280.16 + 360.9856235 * d) - lw; }
+  function julianCycle(d, lw) { return Math.round(d - 0.0009 - lw / (2 * Math.PI)); }
+  function approxTransit(Ht, lw, n) { return 0.0009 + (Ht + lw) / (2 * Math.PI) + n; }
+  function solarTransitJ(ds, M, L) { return J2000 + ds + 0.0053 * Math.sin(M) - 0.0069 * Math.sin(2 * L); }
+  function hourAngle(h, phi, dec) {
+    return Math.acos((Math.sin(h) - Math.sin(phi) * Math.sin(dec)) / (Math.cos(phi) * Math.cos(dec)));
+  }
+  function getSetJ(h, lw, phi, dec, n, M, L, isSunrise) {
+    const w = hourAngle(h, phi, dec);
+    const a = approxTransit(isSunrise ? -w : w, lw, n);
+    return solarTransitJ(a, M, L);
+  }
+
+  const lw = sunToRad(-lon);
+  const phi = sunToRad(lat);
+
+  // Datum (UTC) – wir berechnen für den Tag in Ziel-TZ: y/m/d
+  const dateUTC = Date.UTC(y, m - 1, d, 12, 0, 0); // Mittags-Anker in UTC
+  const d0 = toDays(toJulian(dateUTC));
+
+  const n = julianCycle(d0, lw);
+  const ds = approxTransit(0, lw, n);
+
+  const M = solarMeanAnomaly(ds);
+  const L = eclipticLongitude(M);
+
+  const dec = declination(L, 0);
+
+  // Sonnenauf/-untergang: h0 = -0.833° (Atmosphäre + Sonnenradius)
+  const h0 = sunToRad(-0.833);
+
+  const Jset = getSetJ(h0, lw, phi, dec, n, M, L, false);
+  const Jrise = getSetJ(h0, lw, phi, dec, n, M, L, true);
+
+  return { sunrise: fromJulian(Jrise), sunset: fromJulian(Jset) };
+}
+
+// Sonnenhöhe (Altitude) in Grad, UTC-Date object
+function sunCalcAltitudeDegUTC(lat, lon, dateUTC) {
+  try {
+    // basiert auf denselben Grundformeln wie sunCalcSunTimesUTC (minimal extrahiert)
+    const rad = Math.PI / 180;
+    const lw = -lon * rad;
+    const phi = lat * rad;
+    const d = (Date.UTC(dateUTC.getUTCFullYear(), dateUTC.getUTCMonth(), dateUTC.getUTCDate(), dateUTC.getUTCHours(), dateUTC.getUTCMinutes(), dateUTC.getUTCSeconds()) / 86400000) - (Date.UTC(2000,0,1,12,0,0) / 86400000);
+    const M = (357.5291 + 0.98560028 * d) * rad;
+    const C = (1.9148 * Math.sin(M) + 0.02 * Math.sin(2*M) + 0.0003 * Math.sin(3*M)) * rad;
+    const P = 102.9372 * rad;
+    const L = M + C + P + Math.PI;
+    const e = 23.4397 * rad;
+    const dec = Math.asin(Math.sin(e) * Math.sin(L));
+    const ra = Math.atan2(Math.sin(L) * Math.cos(e), Math.cos(L));
+    const st = (280.16 + 360.9856235 * d) * rad - lw;
+    const H = st - ra;
+    const alt = Math.asin(Math.sin(phi) * Math.sin(dec) + Math.cos(phi) * Math.cos(dec) * Math.cos(H));
+    return alt / rad;
+  } catch (_) { return NaN; }
+}
+
+function sunPhotoScore(t, tSunrise, tSunset) {
+  // Returns 0..1 (minimalistic heuristic):
+  // Blue hour: [-2h..-1h] and [+1h..+2h] -> 0.45
+  // Golden hour: [-1h..0] and [0..+1h] around sunrise/sunset -> 0.85
+  // Daytime -> 0.25 (flatter, "harsher light")
+  // Night -> 0
+  try {
+    const twoH = 2 * 60 * 60 * 1000;
+    const oneH = 1 * 60 * 60 * 1000;
+
+    if (!Number.isFinite(t) || !Number.isFinite(tSunrise) || !Number.isFinite(tSunset)) return 0;
+
+    if (t < tSunrise - twoH) return 0;
+    if (t >= tSunrise - twoH && t < tSunrise - oneH) return 0.45; // blue pre
+    if (t >= tSunrise - oneH && t < tSunrise + oneH) return 0.85; // golden around sunrise
+    if (t > tSunrise + oneH && t < tSunset - oneH) return 0.25; // daytime
+    if (t >= tSunset - oneH && t <= tSunset + oneH) return 0.85; // golden around sunset
+    if (t > tSunset + oneH && t <= tSunset + twoH) return 0.45; // blue post
+    return 0;
+  } catch (_) { return 0; }
+}
+
+function sunDrawCurve(payload, selectedIdx) {
+  try {
+    const c = document.getElementById("sunCurve");
+    if (!c || !c.getContext) return;
+    const ctx = c.getContext("2d");
+    if (!ctx) return;
+
+    const { sunriseUTC, sunsetUTC, tz, hours } = payload || {};
+    if (!(sunriseUTC instanceof Date) || !(sunsetUTC instanceof Date)) return;
+
+    const w = c.width || 680;
+    const h = c.height || 90;
+    ctx.clearRect(0, 0, w, h);
+
+    // Plot area with simple axes
+    const padL = 26;
+    const padR = 10;
+    const padT = 10;
+    const padB = 18;
+    const x0 = padL;
+    const y0 = h - padB;
+    const x1 = w - padR;
+    const y1 = padT;
+
+    // Time window (Mode: photo / 24h)
+    const tSunrise = sunriseUTC.getTime();
+    const tSunset = sunsetUTC.getTime();
+
+    const mode = (typeof window !== "undefined" && window.__DA_SUN_MODE__ === "24h") ? "24h" : "photo";
+    let tStart, tEnd;
+
+    // main sun curve does not use axis overrides
+    const hasAxis = false;
+
+    if (!hasAxis && mode === "24h") {
+      const y = sunriseUTC.getUTCFullYear();
+      const mo = sunriseUTC.getUTCMonth();
+      const da = sunriseUTC.getUTCDate();
+      tStart = Date.UTC(y, mo, da, 0, 0, 0);
+      tEnd = tStart + 24 * 60 * 60 * 1000;
+    } else if (!hasAxis) {
+      const extra = 2 * 60 * 60 * 1000;
+      tStart = tSunrise - extra;
+      tEnd = tSunset + extra;
+    }
+
+    const span = Math.max(1, tEnd - tStart);
+
+    const toX = (t) => x0 + ((t - tStart) / span) * (x1 - x0);
+
+    // axes
+    ctx.globalAlpha = 0.9;
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "rgba(255,255,255,0.25)";
+    // y-axis
+    ctx.beginPath(); ctx.moveTo(x0, y1); ctx.lineTo(x0, y0); ctx.stroke();
+    // x-axis
+    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y0); ctx.stroke();
+
+    // Background zones (ruhig, aber sichtbar): Nacht/Blue/Golden/Day (relativ zu Sunrise/Sunset)
+    try {
+      const xSr = toX(tSunrise);
+      const xSs = toX(tSunset);
+
+      const hour = 60 * 60 * 1000;
+      const xStart = toX(tStart);
+      const xEnd = toX(tEnd);
+
+      const xBlueStartM = toX(tSunrise - hour);
+      const xGoldenEndM = toX(tSunrise + hour);
+
+      const xGoldenStartE = toX(tSunset - hour);
+      const xBlueEndE = toX(tSunset + hour);
+
+      // Nacht (vor Blue Hour morgens) – sehr dezent, eher als „Dämpfung“
+      ctx.globalAlpha = 0.18;
+      ctx.fillStyle = "rgba(0,0,0,0.22)";
+      ctx.fillRect(xStart, y1, Math.max(0, Math.min(xBlueStartM, xEnd) - xStart), (y0 - y1));
+
+      // Blue Hour vor Sunrise (kühles Blau)
+      ctx.globalAlpha = 0.30;
+      ctx.fillStyle = "rgba(70,130,255,0.30)";
+      ctx.fillRect(Math.max(xBlueStartM, xStart), y1, Math.max(0, Math.min(xSr, xEnd) - Math.max(xBlueStartM, xStart)), (y0 - y1));
+
+      // Golden Hour nach Sunrise (warm, dezent)
+      ctx.globalAlpha = 0.22;
+      ctx.fillStyle = "rgba(255,200,90,0.22)";
+      ctx.fillRect(Math.max(xSr, xStart), y1, Math.max(0, Math.min(xGoldenEndM, xEnd) - Math.max(xSr, xStart)), (y0 - y1));
+
+      // Tageslicht (neutral – sehr dezent)
+      ctx.globalAlpha = 0.10;
+      ctx.fillStyle = "rgba(255,255,255,0.10)";
+      ctx.fillRect(Math.max(xGoldenEndM, xStart), y1, Math.max(0, Math.min(xGoldenStartE, xEnd) - Math.max(xGoldenEndM, xStart)), (y0 - y1));
+
+      // Golden Hour vor Sunset
+      ctx.globalAlpha = 0.22;
+      ctx.fillStyle = "rgba(255,200,90,0.22)";
+      ctx.fillRect(Math.max(xGoldenStartE, xStart), y1, Math.max(0, Math.min(xSs, xEnd) - Math.max(xGoldenStartE, xStart)), (y0 - y1));
+
+      // Blue Hour nach Sunset (kühles Blau)
+      ctx.globalAlpha = 0.30;
+      ctx.fillStyle = "rgba(70,130,255,0.30)";
+      ctx.fillRect(Math.max(xSs, xStart), y1, Math.max(0, Math.min(xBlueEndE, xEnd) - Math.max(xSs, xStart)), (y0 - y1));
+
+      // Nacht (nach Blue Hour abends) – sehr dezent
+      ctx.globalAlpha = 0.18;
+      ctx.fillStyle = "rgba(0,0,0,0.22)";
+      ctx.fillRect(Math.max(xBlueEndE, xStart), y1, Math.max(0, xEnd - Math.max(xBlueEndE, xStart)), (y0 - y1));
+
+      // Sunrise / Sunset markers (hell, aber ruhig)
+      ctx.globalAlpha = 0.70;
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = "rgba(255,255,255,0.35)";
+      ctx.beginPath(); ctx.moveTo(xSr, y1); ctx.lineTo(xSr, y0); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(xSs, y1); ctx.lineTo(xSs, y0); ctx.stroke();
+
+      // Labels (minimal): -2h | Sunrise | Sunset | +2h
+      ctx.globalAlpha = 0.75;
+      ctx.fillStyle = "rgba(255,255,255,0.70)";
+      ctx.font = "10px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial";
+      ctx.textBaseline = "bottom";
+
+      const clampX = (x) => Math.max(x0 + 2, Math.min(x1 - 2, x));
+      ctx.textAlign = "left";
+      if (mode === "24h") {
+        ctx.fillText("00:00", clampX(xStart + 2), y0 - 2);
+      } else {
+        ctx.fillText("-2h", clampX(xStart + 2), y0 - 2);
+      }
+
+      ctx.textAlign = "center";
+      ctx.fillText("Sunrise", clampX(xSr), y0 - 2);
+      ctx.fillText("Sunset", clampX(xSs), y0 - 2);
+
+      ctx.textAlign = "right";
+      if (mode === "24h") {
+        ctx.fillText("24:00", clampX(xEnd - 2), y0 - 2);
+      } else {
+        ctx.fillText("+2h", clampX(xEnd - 2), y0 - 2);
+      }
+    } catch (_) {}
+
+
+    // sample curve (every 10 minutes, max ~110 points for extended span)
+    const stepMs = Math.max(10 * 60 * 1000, Math.floor(span / 110));
+    const pts = [];
+    for (let t = tStart; t <= tEnd; t += stepMs) {
+      const alt = sunCalcAltitudeDegUTC(payload.lat, payload.lon, new Date(t));
+      if (Number.isFinite(alt)) pts.push({ t, alt });
+    }
+    if (pts.length < 2) return;
+
+    // normalize altitude for display (twilight-aware)
+    // Wir „klemmen“ die Kurve bei -6° (civil twilight) auf 0,
+    // damit die ersten Stunden wirklich am Nullpunkt bleiben.
+    const twilightAlt = -6; // degrees
+    let maxAlt = -Infinity;
+    for (const p of pts) { if (p.alt > maxAlt) maxAlt = p.alt; }
+    if (!Number.isFinite(maxAlt) || maxAlt - twilightAlt < 1e-6) return;
+    const denom = maxAlt - twilightAlt;
+
+    const toY = (alt) => {
+      const nRaw = (alt - twilightAlt) / denom;
+      const n = Math.max(0, Math.min(1, nRaw));
+      const yy = y0 - n * (y0 - y1);
+      return Math.max(y1, Math.min(y0, yy));
+    };
+
+    // draw curve (yellow)
+    ctx.globalAlpha = 0.95;
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(255,212,0,0.90)";
+    ctx.beginPath();
+    ctx.moveTo(toX(pts[0].t), toY(pts[0].alt));
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(toX(pts[i].t), toY(pts[i].alt));
+    ctx.stroke();
+
+    // secondary curve (photo window heuristic) – subtle line above the yellow curve
+    try {
+      ctx.globalAlpha = 0.55;
+      ctx.lineWidth = 1.4;
+      ctx.strokeStyle = "rgba(255,255,255,0.45)";
+      ctx.beginPath();
+      const liftMax = 10; // px
+      const yLift = (t) => {
+        const s = sunPhotoScore(t, tSunrise, tSunset);
+        return (Number.isFinite(s) ? s : 0) * liftMax;
+      };
+      ctx.moveTo(toX(pts[0].t), Math.max(y1, Math.min(y0, toY(pts[0].alt) - yLift(pts[0].t))));
+      for (let i = 1; i < pts.length; i++) {
+        const xx = toX(pts[i].t);
+        const yy = Math.max(y1, Math.min(y0, toY(pts[i].alt) - yLift(pts[i].t)));
+        ctx.lineTo(xx, yy);
+      }
+      ctx.stroke();
+    } catch (_) {}
+
+    // selected marker (from slider) – Index ODER Zeitstempel in ms
+    let selTime = null;
+    try {
+      if (Number(selectedIdx) > 1e12) {
+        selTime = Number(selectedIdx);
+      } else {
+        const i = sunClamp(Number(selectedIdx) || 0, 0, (hours?.length || 1) - 1);
+        selTime = Date.parse(hours[i]?.time || "") || null;
+      }
+    } catch (_) {}
+    if (selTime) {
+      const x = toX(selTime);
+      // vertical line
+      ctx.globalAlpha = 0.8;
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = "rgba(255,212,0,0.55)";
+      ctx.beginPath(); ctx.moveTo(x, y1); ctx.lineTo(x, y0); ctx.stroke();
+      // dot on curve
+      const altNow = sunCalcAltitudeDegUTC(payload.lat, payload.lon, new Date(selTime));
+      const y = Number.isFinite(altNow) ? toY(altNow) : y0;
+      ctx.fillStyle = "rgba(255,212,0,0.98)";
+      ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill();
+      try {
+        const phase = (Date.now() % 1000) / 1000;
+        const r = 6 + 3 * Math.sin(phase * Math.PI * 2);
+        ctx.strokeStyle = "rgba(255,215,0,0.55)";
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(x, y, Math.max(2, r), 0, Math.PI * 2); ctx.stroke();
+      } catch (_) {}
+    }
+
+    
+    
+    
+    // now marker (realtime) – DISTANZ-LESBAR + subtiler Pulse (4.8s) für schnellen Fokus
+    try {
+      const nowT = Date.now(); // Island = UTC
+      if (Number.isFinite(nowT) && nowT >= tStart && nowT <= tEnd) {
+        const xN = toX(nowT);
+
+        // Pulse: sehr langsam, sehr klein – eher "Atmen" als Blinken
+        const phase = (nowT % 4800) / 4800;
+        const pulse = 0.5 + 0.5 * Math.sin(phase * Math.PI * 2); // 0..1
+        const pA = 0.85 + 0.15 * pulse; // 0.85..1.0
+        const pW = 0.90 + 0.20 * pulse; // 0.90..1.10
+
+        // Core Linie – bleibt kontrolliert (nicht zu fett)
+        ctx.globalAlpha = 1;
+        ctx.lineWidth = 2.6;
+        ctx.strokeStyle = "rgba(255,215,0,1)";
+        ctx.beginPath(); ctx.moveTo(xN, y1); ctx.lineTo(xN, y0); ctx.stroke();
+
+        // Glow Layer 1 – nah, klar sichtbar
+        ctx.globalAlpha = 0.55 * pA;
+        ctx.lineWidth = 6 * pW;
+        ctx.strokeStyle = "rgba(255,215,0,0.75)";
+        ctx.beginPath(); ctx.moveTo(xN, y1); ctx.lineTo(xN, y0); ctx.stroke();
+
+        // Glow Layer 2 – weich, Eye Catch aus Distanz
+        ctx.globalAlpha = 0.25 * pA;
+        ctx.lineWidth = 12 * pW;
+        ctx.strokeStyle = "rgba(255,215,0,0.45)";
+        ctx.beginPath(); ctx.moveTo(xN, y1); ctx.lineTo(xN, y0); ctx.stroke();
+
+        // Glow Layer 3 – ultra soft Atmosphere
+        ctx.globalAlpha = 0.12 * pA;
+        ctx.lineWidth = 20 * pW;
+        ctx.strokeStyle = "rgba(255,215,0,0.25)";
+        ctx.beginPath(); ctx.moveTo(xN, y1); ctx.lineTo(xN, y0); ctx.stroke();
+
+        // Punkt – sichtbar auf kleiner Mobile Fläche
+        const altN = sunCalcAltitudeDegUTC(payload.lat, payload.lon, new Date(nowT));
+        const yN = Number.isFinite(altN) ? toY(altN) : y0;
+
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = "rgba(255,215,0,1)";
+        ctx.beginPath(); ctx.arc(xN, yN, 3.8, 0, Math.PI * 2); ctx.fill();
+
+        // Punkt Halo Layer 1
+        ctx.globalAlpha = 0.55 * pA;
+        ctx.fillStyle = "rgba(255,215,0,0.85)";
+        ctx.beginPath(); ctx.arc(xN, yN, 6.5 * pW, 0, Math.PI * 2); ctx.fill();
+
+        // Punkt Halo Layer 2
+        ctx.globalAlpha = 0.25 * pA;
+        ctx.fillStyle = "rgba(255,215,0,0.6)";
+        ctx.beginPath(); ctx.arc(xN, yN, 10 * pW, 0, Math.PI * 2); ctx.fill();
+      }
+    } catch (_) {}
+
+
+    // selection marker overlay (Slider-Auswahl) – bewusst anders als NOW-Marker
+    try {
+      let tSel = NaN;
+      if (Number(selectedIdx) > 1e12) {
+        tSel = Number(selectedIdx);
+      } else if (hours && hours.length) {
+        const iSel = sunClamp(Number(selectedIdx) || 0, 0, (hours.length || 1) - 1);
+        tSel = Date.parse(hours[iSel]?.time || "") || NaN;
+      }
+
+      if (Number.isFinite(tSel)) {
+        const xSel = toX(tSel);
+
+        // thin neutral line (white-ish) so user can distinguish selection vs NOW
+        ctx.globalAlpha = 0.55;
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "rgba(255,255,255,0.35)";
+        ctx.beginPath(); ctx.moveTo(xSel, y1); ctx.lineTo(xSel, y0); ctx.stroke();
+
+        // small dot at curve (white)
+        const altSel = sunCalcAltitudeDegUTC(payload.lat, payload.lon, new Date(tSel));
+        const ySel = Number.isFinite(altSel) ? toY(altSel) : y0;
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = "rgba(255,255,255,0.85)";
+        ctx.beginPath(); ctx.arc(xSel, ySel, 2.8, 0, Math.PI * 2); ctx.fill();
+      }
+    } catch (_) {}
+
+
+
+
+
+    // y label minimal
+    ctx.globalAlpha = 0.6;
+    ctx.fillStyle = "rgba(255,212,0,0.70)";
+    ctx.font = "12px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+    ctx.fillText("☀", 6, y1 + 12);
+  } catch (_) {}
+}
+
+
+// --- UI ---
+function sunEnsureUI() {
+  if (document.getElementById("sunBox")) return;
+
+  const imo = document.getElementById("imoBox");
+  const anchor = imo || document.getElementById("windBox") || document.getElementById("detail") || document.getElementById("state") || document.body;
+  if (!anchor || !anchor.parentNode) return;
+
+  const box = document.createElement("div");
+  box.id = "sunBox";
+  box.setAttribute("data-panel-id", "sun");
+  box.setAttribute("data-panel-collapsible", "1");
+  box.style.marginTop = "10px";
+  box.style.padding = "10px";
+  box.style.borderRadius = "10px";
+  box.style.border = "1px solid rgba(255,255,255,0.08)";
+  box.style.background = "rgba(0,0,0,0.25)";
+  box.style.color = "inherit";
+
+  box.innerHTML = `
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+      <div style="font-weight:700;">Licht & Wetter (Sunrise → Sunset)</div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <div style="opacity:.65; font-size:12px;">Data: Open-Meteo</div>
+        <button type="button" id="sunModeToggle" data-sun-mode-toggle="1" aria-label="Zeitachse umschalten" style="border:1px solid rgba(255,255,255,.15); background:rgba(255,255,255,.06); color:inherit; border-radius:999px; padding:4px 10px; font-size:12px; cursor:pointer;">Foto</button>
+        <button type="button" data-panel-toggle="sun" aria-label="Licht Panel ein/ausklappen">▾</button>
+      </div>
+    </div>
+
+    <div data-panel-body>
+
+    <div id="sunMeta" style="margin-top:6px; opacity:.9; font-size:13px; line-height:1.35;">—</div>
+
+    <canvas id="sunCurve" width="680" height="90" style="width:100%; height:90px; margin-top:8px; display:block; border-radius:8px; background:rgba(255,255,255,0.03);"></canvas>
+    <div id="sunAxisLabel" style="display:flex; justify-content:space-between; margin-top:4px; font-size:12px; opacity:.75;">
+      <span>Aufgang</span><span>Untergang</span>
+    </div>
+
+
+    <div id="sunTimeline" style="margin-top:8px;">
+      <input id="sunSlider" type="range" min="0" max="10" value="0" step="1" style="width:100%;"/>
+      <div id="sunTicks" style="display:flex; justify-content:space-between; gap:6px; margin-top:6px; font-size:12px; opacity:.95;"></div>
+      <div id="sunHint" style="margin-top:6px; opacity:.65; font-size:12px; line-height:1.25;">
+        Stündliche Vorschau. Keine Garantie – Wetter bleibt Wetter.
+      </div>
+    </div>
+
+    <div style="margin-top:10px; border-top:1px solid rgba(255,255,255,0.07);"></div>
+
+    <div id="sunPlanTrigger" role="button" tabindex="0" aria-expanded="false"
+      style="margin-top:8px; display:flex; align-items:center; justify-content:space-between; gap:10px; cursor:pointer; user-select:none;">
+      <div style="font-size:12px; opacity:.9;">Planung öffnen — +48h</div>
+      <div id="sunPlanChevron" aria-hidden="true" style="font-size:12px; opacity:.7; transform:rotate(0deg); transition:transform 220ms ease;">▸</div>
+    </div>
+
+    <div id="sunPlanBody"
+      style="margin-top:8px; overflow:hidden; max-height:0px; opacity:0; transition:max-height 320ms ease, opacity 320ms ease;">
+      <div style="padding:10px; border-radius:10px; border:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.03);">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+          <div style="font-size:12px; opacity:.9;">Vorschau — +48h</div>
+          <div style="font-size:12px; opacity:.65;">(gleiche Logik, Zeit versetzt)</div>
+        </div>
+
+        <div style="margin-top:8px; border-radius:12px; border:1px solid rgba(255,255,255,0.06); background:rgba(0,0,0,0.22); padding:8px;">
+          <canvas id="sunPlanCurve" width="680" height="90" style="width:100%; height:90px; display:block;"></canvas>
+          <div id="sunPlanAxis" style="display:flex; justify-content:space-between; margin-top:6px; font-size:12px; opacity:.85;">
+            <span>—</span><span>—</span>
+          </div>
+        </div>
+
+        <div id="sunPlanTimeline" style="margin-top:8px;">
+          <input id="sunPlanSlider" type="range" min="0" max="10" value="0" step="1" style="width:100%;"/>
+          <div id="sunPlanTicks" style="display:flex; justify-content:space-between; gap:6px; margin-top:6px; font-size:12px; opacity:.95;"></div>
+          <div id="sunPlanHint" style="margin-top:6px; opacity:.65; font-size:12px; line-height:1.25;">
+            Vorschau +48h. Keine Garantie – Wetter bleibt Wetter.
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+  `;
+
+  // Unter IMO einhängen, wenn vorhanden, sonst nach anchor
+  try {
+    if (imo && imo.parentNode) {
+      imo.parentNode.insertBefore(box, imo.nextSibling);
+    } else {
+      anchor.parentNode.insertBefore(box, anchor.nextSibling);
+    }
+  } catch (_) {
+    // Notfalls ans Ende
+    try { document.body.appendChild(box); } catch (_) {}
+  }
+
+  // Slider interaction (leise)
+  try {
+    const slider = document.getElementById("sunSlider");
+    if (slider && !slider.__sunBound) {
+      slider.addEventListener("input", () => {
+        try { sunRenderSelectedIndex(Number(slider.value)); } catch (_) {}
+      });
+      slider.__sunBound = true;
+    }
+  } catch (_) {}
+
+  // Planung öffnen – +48h (Step 1: nur UI/Animation, noch kein Render)
+  try {
+    const trg = document.getElementById("sunPlanTrigger");
+    const body = document.getElementById("sunPlanBody");
+    const chev = document.getElementById("sunPlanChevron");
+    const KEY = "da_sun_plan_open_v1";
+
+    const setOpen = (open) => {
+      if (!trg || !body) return;
+      trg.setAttribute("aria-expanded", open ? "true" : "false");
+      try { if (chev) chev.style.transform = open ? "rotate(90deg)" : "rotate(0deg)"; } catch (_) {}
+
+      if (open) {
+        body.style.opacity = "1";
+        // max-height large enough; content is small now, will grow later
+        body.style.maxHeight = "760px";
+      } else {
+        body.style.opacity = "0";
+        body.style.maxHeight = "0px";
+      }
+
+      try { sessionStorage.setItem(KEY, open ? "1" : "0"); } catch (_) {}
+
+      // Render Planung (+48h) nur wenn geöffnet (keine neuen API Calls)
+      try {
+        if (open) {
+          const raw = (typeof window !== "undefined") ? window.__DA_SUN_RAW__ : null;
+          if (raw) sunPlanRenderFromRaw(raw);
+        }
+      } catch (_) {}
+    };
+
+    const getOpen = () => {
+      try { return sessionStorage.getItem(KEY) === "1"; } catch (_) { return false; }
+    };
+
+    const toggle = () => setOpen(!getOpen());
+
+    if (trg && !trg.__planBound) {
+      trg.addEventListener("click", toggle);
+      trg.addEventListener("keydown", (e) => {
+        const k = e && e.key ? e.key : "";
+        if (k === "Enter" || k === " ") { e.preventDefault(); toggle(); }
+      });
+      trg.__planBound = true;
+
+      // initial state (session-only)
+      setOpen(getOpen());
+    }
+  } catch (_) {}
+}
+
+function sunIconForHour(h) {
+  // h: { cloud, precipProb, precip, code }
+  const pp = Number(h?.precipProb);
+  const pr = Number(h?.precip);
+  const cc = Number(h?.cloud);
+
+  if (Number.isFinite(pp) && pp >= 50) return "🌧️";
+  if (Number.isFinite(pr) && pr > 0.0) return "🌧️";
+  if (Number.isFinite(cc)) {
+    if (cc < 25) return "☀️";
+    if (cc < 60) return "⛅";
+    return "☁️";
+  }
+  return "—";
+}
+
+function sunRenderSkeleton() {
+  sunEnsureUI();
+  const meta = document.getElementById("sunMeta");
+  const ticks = document.getElementById("sunTicks");
+  if (meta) meta.textContent = "—";
+  if (ticks) ticks.innerHTML = "";
+}
+
+
+function sunIconForHourDayNight(h, tUTC, sunriseUTC, sunsetUTC) {
+  // Nacht: vor Sunrise / nach Sunset -> 🌙 bei klarem Himmel, sonst ☁️/🌧️ etc.
+  try {
+    const base = sunIconForHour(h);
+
+    if (!(sunriseUTC instanceof Date) || !(sunsetUTC instanceof Date)) return base;
+    if (!Number.isFinite(tUTC)) return base;
+
+    const sr = sunriseUTC.getTime();
+    const ss = sunsetUTC.getTime();
+    const isNight = (tUTC < sr) || (tUTC > ss);
+    if (!isNight) return base;
+
+    // Wetter bleibt Wetter
+    if (base === "🌧️") return base;
+
+    const cc = Number(h?.cloud);
+    if (Number.isFinite(cc) && cc >= 20) return "☁️";
+    return "🌙";
+  } catch (_) {
+    return sunIconForHour(h);
+  }
+}
+
+function sunRender(payload) {
+  sunEnsureUI();
+  const meta = document.getElementById("sunMeta");
+  const ticks = document.getElementById("sunTicks");
+  const slider = document.getElementById("sunSlider");
+  if (!meta || !ticks || !slider) return;
+
+  if (!payload) {
+    meta.textContent = "Nicht verfügbar.";
+    ticks.innerHTML = "";
+    return;
+  }
+
+  const { sunriseUTC, sunsetUTC, hours, tz, nowUTC } = payload;
+
+  const sr = sunFmtHHMM(sunriseUTC, tz);
+  const ss = sunFmtHHMM(sunsetUTC, tz);
+
+  // Restlicht (nur wenn zwischen sunrise & sunset)
+  let rest = "—";
+  try {
+    const now = nowUTC.getTime();
+    const sset = sunsetUTC.getTime();
+    const srise = sunriseUTC.getTime();
+    if (now >= srise && now <= sset) {
+      const diffMin = Math.max(0, Math.round((sset - now) / 60000));
+      const hh = Math.floor(diffMin / 60);
+      const mm = diffMin % 60;
+      rest = `${hh}h ${sunPad2(mm)}m`;
+    } else if (now < srise) {
+      const diffMin = Math.max(0, Math.round((srise - now) / 60000));
+      const hh = Math.floor(diffMin / 60);
+      const mm = diffMin % 60;
+      rest = `bis Aufgang: ${hh}h ${sunPad2(mm)}m`;
+    } else {
+      rest = "nach Untergang";
+    }
+  } catch (_) {}
+
+  meta.innerHTML = `🌅 <b>${sr}</b> &nbsp;→&nbsp; 🌇 <b>${ss}</b> &nbsp;•&nbsp; Restlicht: <b>${rest}</b>`;
+
+  // Axis labels (Mode: photo / 24h)
+  try {
+    const ax = document.getElementById("sunAxisLabel");
+    const mode = (typeof window !== "undefined" && window.__DA_SUN_MODE__ === "24h") ? "24h" : "photo";
+    if (ax && ax.children && ax.children.length >= 2) {
+      if (mode === "24h") {
+        ax.children[0].textContent = "00:00";
+        ax.children[1].textContent = "24:00";
+      } else {
+        ax.children[0].textContent = "−2h";
+        ax.children[1].textContent = "+2h";
+      }
+    }
+  } catch (_) {}
+
+  // ticks
+  ticks.innerHTML = "";
+
+  // Mode (photo / 24h)
+  const mode = (typeof window !== "undefined" && window.__DA_SUN_MODE__ === "24h") ? "24h" : "photo";
+
+  // 10-Minuten Raster für Slider-Auswahl (Sonne = kontinuierlich, Wetter = interpolierter Trend)
+  const FINE_STEP_MIN = 10;
+  let tStartFine = null;
+  let tEndFine = null;
+  try{
+    const tSunrise = sunriseUTC.getTime();
+    const tSunset = sunsetUTC.getTime();
+    if (mode === "24h") {
+      const y = sunriseUTC.getUTCFullYear();
+      const mo = sunriseUTC.getUTCMonth();
+      const da = sunriseUTC.getUTCDate();
+      tStartFine = Date.UTC(y, mo, da, 0, 0, 0);
+      tEndFine = tStartFine + 24 * 60 * 60 * 1000;
+    } else {
+      const extra = 2 * 60 * 60 * 1000;
+      tStartFine = tSunrise - extra;
+      tEndFine = tSunset + extra;
+    }
+  }catch(_){}
+
+  const fineTimes = [];
+  try{
+    const stepMs = FINE_STEP_MIN * 60 * 1000;
+    if (Number.isFinite(tStartFine) && Number.isFinite(tEndFine) && tEndFine > tStartFine) {
+      const start = Math.floor(tStartFine / stepMs) * stepMs;
+      const end = Math.ceil(tEndFine / stepMs) * stepMs;
+      for (let t = start; t <= end; t += stepMs) fineTimes.push(t);
+    }
+  }catch(_){}
+
+  // Expose for Auto/Render
+  try{
+    window.__DA_SUN_FINE_STEP_MIN__ = FINE_STEP_MIN;
+    window.__DA_SUN_FINE_TIMES__ = fineTimes;
+  }catch(_){}
+
+  const maxIdx = Math.max(0, fineTimes.length - 1);
+  slider.min = 0;
+  slider.max = String(maxIdx);
+  slider.step = "1";
+
+  // default: nächster 10-Minuten-Slot ab jetzt
+  let defIdx = 0;
+  try {
+    const nowT = nowUTC.getTime();
+    let best = 0;
+    let bestDiff = Infinity;
+
+    const stepMs = FINE_STEP_MIN * 60 * 1000;
+    const nowR = Math.round(nowT / stepMs) * stepMs;
+
+    for (let i = 0; i < (fineTimes.length || 0); i++) {
+      const t = fineTimes[i] || 0;
+      const diff = Math.abs(t - nowR);
+      if (diff < bestDiff) { bestDiff = diff; best = i; }
+    }
+    defIdx = best;
+  } catch (_) {}
+  slider.value = String(defIdx);
+
+  // Mode-aware ticks (Solution B: im 24h-Modus Labels ausdünnen, Icons bleiben)
+  const showLabelEvery = (mode === "24h") ? 3 : 1; // 00,03,06,09,12,15,18,21
+  const tickCount = (hours?.length || 0);
+
+  // Styling: im 24h-Modus ruhig halten, kein Overflow
+  try {
+    ticks.style.display = "flex";
+    ticks.style.justifyContent = "space-between";
+    ticks.style.gap = (mode === "24h") ? "4px" : "6px";
+    ticks.style.overflow = "hidden";
+  } catch (_) {}
+
+  for (let i = 0; i < tickCount; i++) {
+    const h = hours[i];
+    const el = document.createElement("div");
+    el.style.flex = "1";
+    el.style.textAlign = "center";
+    el.style.whiteSpace = "nowrap";
+    el.style.opacity = (i === defIdx) ? "1" : ".85";
+    el.style.minWidth = "0";
+
+    const t = (() => { try { return sunFmtHHMM(sunParseISOToUTC(h.time), tz); } catch (_) { return "—"; } })();
+    const tUTC = Date.parse(h?.time || "") || NaN;
+    const ic = sunIconForHourDayNight(h, tUTC, sunriseUTC, sunsetUTC);
+
+    const isLabeled = (mode !== "24h") || (i % showLabelEvery === 0);
+    const label = isLabeled ? t : "&nbsp;";
+    const timeFont = (mode === "24h") ? "11px" : "12px";
+    const timeOpacity = (mode === "24h") ? ".85" : ".9";
+
+    el.innerHTML = `<div style="font-weight:600;">${ic}</div><div style="opacity:${timeOpacity}; font-size:${timeFont};">${label}</div>`;
+    ticks.appendChild(el);
+  }
+
+  // render selection details (minimal)
+  sunLastPayload = payload;
+  sunLastPayloadKey = payload?.key || "";
+  sunRenderSelectedIndex(defIdx);
+  try { /* curve drawn in selection */ } catch (_) {}
+  try { sunStartAutoPlay(); } catch (_) {}
+}
+
+
+function sunNearestHourIndex(payload, tMs){
+  try{
+    if (!payload || !Array.isArray(payload.hours) || !payload.hours.length) return 0;
+    let best = 0, bestDiff = Infinity;
+    for (let i=0;i<payload.hours.length;i++){
+      const tt = sunParseISOToUTC(payload.hours[i].time).getTime();
+      const d = Math.abs(tt - tMs);
+      if (d < bestDiff){ bestDiff = d; best = i; }
+    }
+    return best;
+  }catch(_){ return 0; }
+}
+
+function sunInterpFromHourly(payload, tMs){
+  const out = { cloud: NaN, precipProb: NaN, precip: NaN, code: null, isExactHour: false };
+  try{
+    if (!payload || !Array.isArray(payload.hours) || !payload.hours.length) return out;
+
+    const times = payload.hours.map(h => sunParseISOToUTC(h.time).getTime());
+    let j = 0;
+    for (let i=0;i<times.length;i++){
+      if (times[i] <= tMs) j = i;
+      if (times[i] > tMs) break;
+    }
+    const t0 = times[j];
+    const h0 = payload.hours[j];
+    const t1 = (j+1 < times.length) ? times[j+1] : t0;
+    const h1 = (j+1 < times.length) ? payload.hours[j+1] : h0;
+
+    out.isExactHour = (Math.abs(tMs - t0) < 1000);
+
+    const itp = (typeof window !== "undefined" && typeof window.__DA_INTERPOLATE_WEATHER__ === "function")
+      ? window.__DA_INTERPOLATE_WEATHER__
+      : function(t, a, b, v0, v1){
+          if (!isFinite(a) || !isFinite(b) || b === a) return v0;
+          const f = Math.max(0, Math.min(1, (t-a)/(b-a)));
+          return v0 + (v1-v0)*f;
+        };
+
+    const c0 = Number(h0.cloud), c1 = Number(h1.cloud);
+    const p0 = Number(h0.precipProb), p1 = Number(h1.precipProb);
+    const r0 = Number(h0.precip), r1 = Number(h1.precip);
+
+    out.cloud = (isFinite(c0) && isFinite(c1)) ? itp(tMs, t0, t1, c0, c1) : (isFinite(c0) ? c0 : NaN);
+    out.precipProb = (isFinite(p0) && isFinite(p1)) ? itp(tMs, t0, t1, p0, p1) : (isFinite(p0) ? p0 : NaN);
+    out.precip = (isFinite(r0) && isFinite(r1)) ? itp(tMs, t0, t1, r0, r1) : (isFinite(r0) ? r0 : NaN);
+
+    out.code = h0 && (h0.code ?? null);
+    return out;
+  }catch(_){
+    return out;
+  }
+}
+
+function sunRenderSelectedIndex(idx) {
+  try {
+    const payload = sunLastPayload;
+    if (!payload) return;
+
+    const fineTimes = (typeof window !== "undefined" && Array.isArray(window.__DA_SUN_FINE_TIMES__)) ? window.__DA_SUN_FINE_TIMES__ : [];
+    const useFine = fineTimes && fineTimes.length;
+
+    const hint = document.getElementById("sunHint");
+    const ticks = document.getElementById("sunTicks");
+    if (!hint || !ticks) return;
+
+    if (useFine) {
+      const i = sunClamp(Number(idx) || 0, 0, fineTimes.length - 1);
+      const selT = fineTimes[i];
+
+      const hi = sunNearestHourIndex(payload, selT);
+      for (let k = 0; k < ticks.children.length; k++) {
+        try { ticks.children[k].style.opacity = (k === hi) ? "1" : ".85"; } catch (_) {}
+      }
+
+      const t = sunFmtHHMM(new Date(selT), payload.tz);
+
+      const w = sunInterpFromHourly(payload, selT);
+      const cc = w.cloud;
+      const pp = w.precipProb;
+      const pr = w.precip;
+
+      const approx = w.isExactHour ? "" : "~";
+      const ccTxt = Number.isFinite(cc) ? `${approx}${Math.round(cc)}% Bewölkung` : "Bewölkung —";
+      const ppTxt = Number.isFinite(pp) ? `${approx}${Math.round(pp)}% Regenrisiko` : "Regenrisiko —";
+      const prTxt = Number.isFinite(pr) ? `${approx}${pr.toFixed(1)} mm` : "—";
+
+      
+    // Relative Zeit +X (gegenüber Jetzt) dominant anzeigen (Planung)
+    let __relTxt = "";
+    try{
+      const nowBase = Date.now();
+      const diffMs = selT - nowBase;
+      const sign = diffMs >= 0 ? "+" : "−";
+      const absMs = Math.abs(diffMs);
+      const hh = Math.floor(absMs / (60*60*1000));
+      const mm = Math.round((absMs % (60*60*1000)) / (60*1000));
+      __relTxt = `${sign}${hh}h ${mm.toString().padStart(2,"0")}m`;
+    }catch(_){ __relTxt = t; }
+
+    hint.innerHTML = `Auswahl <b>${t}</b>: ${ccTxt} • ${ppTxt} • Niederschlag: <b>${prTxt}</b>`;
+
+
+
+      try { sunDrawCurve(payload, selT); } catch (_) {}
+    } else {
+      if (!Array.isArray(payload.hours) || !payload.hours.length) return;
+
+      const i = sunClamp(Number(idx) || 0, 0, payload.hours.length - 1);
+      const h = payload.hours[i];
+
+      for (let k = 0; k < ticks.children.length; k++) {
+        try { ticks.children[k].style.opacity = (k === i) ? "1" : ".85"; } catch (_) {}
+      }
+
+      const t = (() => { try { return sunFmtHHMM(sunParseISOToUTC(h.time), payload.tz); } catch (_) { return "—"; } })();
+      const cc = Number(h.cloud);
+      const pp = Number(h.precipProb);
+      const pr = Number(h.precip);
+
+      const ccTxt = Number.isFinite(cc) ? `${Math.round(cc)}% Bewölkung` : "Bewölkung —";
+      const ppTxt = Number.isFinite(pp) ? `${Math.round(pp)}% Regenrisiko` : "Regenrisiko —";
+      const prTxt = Number.isFinite(pr) ? `${pr.toFixed(1)} mm` : "—";
+
+      hint.innerHTML = `Auswahl <b>${t}</b>: ${ccTxt} • ${ppTxt} • Niederschlag: <b>${prTxt}</b>`;
+try { sunDrawCurve(payload, i); } catch (_) {}
+    }
+  } catch (_) {}
+}
+
+
+
+function sunStartAutoPlay() {
+  try {
+    const slider = document.getElementById("sunSlider");
+    if (!slider) return;
+    if (sunAutoTimer) return;
+
+    sunAutoTimer = setInterval(() => {
+      try {
+        const payload = sunLastPayload;
+        if (!payload) return;
+
+        const fineTimes = (typeof window !== "undefined" && Array.isArray(window.__DA_SUN_FINE_TIMES__)) ? window.__DA_SUN_FINE_TIMES__ : [];
+        const useFine = fineTimes && fineTimes.length;
+
+        if (!useFine && (!Array.isArray(payload.hours) || !payload.hours.length)) return;
+
+        // User hat gerade geschoben -> Auto kurz pausieren
+        if (Date.now() - (sunLastUserInteractAt || 0) < 8000) return;
+
+        // Jetzt (Iceland/UTC) -> passendsten Index wählen (10-Min Raster wenn aktiv)
+        const nowUtc = new Date(); // UTC-basiert; Island = UTC
+        const nowT = nowUtc.getTime();
+
+        let bestIdx = 0;
+        let bestDiff = Infinity;
+
+        if (useFine) {
+          const stepMin = Number(window.__DA_SUN_FINE_STEP_MIN__) || 10;
+          const stepMs = stepMin * 60 * 1000;
+          const nowR = Math.round(nowT / stepMs) * stepMs;
+
+          for (let i = 0; i < fineTimes.length; i++) {
+            const t = fineTimes[i];
+            const d = Math.abs(t - nowR);
+            if (d < bestDiff) { bestDiff = d; bestIdx = i; }
+          }
+        } else {
+          const nowIso = nowUtc.toISOString().slice(0, 16);
+          const nowHourIso = nowIso.slice(0, 13) + ":00";
+          const nowH = sunParseISOToUTC(nowHourIso).getTime();
+
+          for (let i = 0; i < payload.hours.length; i++) {
+            const t = sunParseISOToUTC(payload.hours[i].time).getTime();
+            const d = Math.abs(t - nowH);
+            if (d < bestDiff) { bestDiff = d; bestIdx = i; }
+          }
+        }
+
+        // Slider + Render (mit Kurve/Marker)
+        if (Number(slider.value) !== Number(bestIdx)) {
+          slider.value = String(bestIdx);
+          sunAutoLastIdx = bestIdx;
+          sunRenderSelectedIndex(bestIdx);
+        } else {
+          // für Puls/Marker minimal neu zeichnen (ohne Wert zu ändern)
+          sunRenderSelectedIndex(bestIdx);
+        }
+      } catch (_) {}
+    }, 1000);
+  } catch (_) {}
+}
+
+// --- Fetch + Mapping ---
+async function sunFetchHourly(lat, lon, tz = SUN_TZ) {
+  const params = new URLSearchParams({
+    latitude: lat.toFixed(4),
+    longitude: lon.toFixed(4),
+    hourly: "cloudcover,precipitation_probability,precipitation,weathercode",
+    timezone: tz,
+  });
+  const url = `${SUN_API_BASE}?${params.toString()}`;
+  const res = await fetch(url, { cache: "no-cache" });
+  if (!res.ok) throw new Error(`SunWeather HTTP ${res.status}`);
+  const js = await res.json();
+  return js?.hourly || null;
+}
+
+function sunNormalizeHourly(hourly) {
+  // returns array of { time, cloud, precipProb, precip, code }
+  if (!hourly || !Array.isArray(hourly.time)) return [];
+  const t = hourly.time;
+  const cc = hourly.cloudcover || hourly.cloud_cover || [];
+  const pp = hourly.precipitation_probability || hourly.precipitationProbability || [];
+  const pr = hourly.precipitation || [];
+  const wc = hourly.weathercode || hourly.weather_code || [];
+
+  const out = [];
+  for (let i = 0; i < t.length; i++) {
+    out.push({
+      time: t[i],
+      cloud: cc[i],
+      precipProb: pp[i],
+      precip: pr[i],
+      code: wc[i],
+    });
+  }
+  return out;
+}
+
+function sunFmtISOKeyInTz(dateObj, tz = SUN_TZ) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(dateObj).reduce((a, p) => (a[p.type] = p.value, a), {});
+    const y = parts.year, mo = parts.month, d = parts.day, hh = parts.hour, mm = parts.minute;
+    // Open-Meteo hourly.time ist i.d.R. "YYYY-MM-DDTHH:MM" in der gewählten TZ
+    return `${y}-${mo}-${d}T${hh}:${mm}`;
+  } catch (_) {
+    // Fallback (lokal): nicht perfekt, aber robust ohne Console-Spam
+    const y = dateObj.getFullYear();
+    const mo = sunPad2(dateObj.getMonth() + 1);
+    const d = sunPad2(dateObj.getDate());
+    const hh = sunPad2(dateObj.getHours());
+    const mm = sunPad2(dateObj.getMinutes());
+    return `${y}-${mo}-${d}T${hh}:${mm}`;
+  }
+}
+
+function sunBuildHourlySlots(hoursAll, axisStartUTC, axisEndUTC, tz = SUN_TZ) {
+  // Baut stündliche Slots über das komplette Fenster (z.B. -2h ... +2h),
+  // und mappt Open-Meteo-Werte über den Zeit-Key in derselben TZ.
+  const map = new Map();
+  for (const h of hoursAll || []) {
+    if (h && typeof h.time === "string") map.set(h.time, h);
+  }
+
+  const out = [];
+  const start = axisStartUTC instanceof Date ? axisStartUTC.getTime() : NaN;
+  const end = axisEndUTC instanceof Date ? axisEndUTC.getTime() : NaN;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return out;
+
+  // auf volle Stunde runden (UTC), Anzeige/Matching erfolgt in TZ über Keys
+  const oneH = 60 * 60 * 1000;
+  let t = Math.floor(start / oneH) * oneH;
+  const tEnd = Math.ceil(end / oneH) * oneH;
+
+  for (; t <= tEnd; t += oneH) {
+    const d = new Date(t);
+    // Wir matchen per Key in Ziel-TZ
+    const key = sunFmtISOKeyInTz(d, tz);
+    const found = map.get(key);
+    out.push(found ? found : { time: key, cloud: null, precipProb: null, precip: null, code: null });
+  }
+  return out;
+}
+
+
+function sunBuildHourlySlotsExclusive(hoursAll, axisStartUTC, axisEndUTC, tz = SUN_TZ) {
+  // Wie sunBuildHourlySlots, aber axisEnd wird als exklusiv behandelt (t < tEnd).
+  // Sinn: 24h-Modus zeigt 00:00..23:00 ohne doppeltes 24:00 (= 00:00 vom Folgetag).
+  const map = new Map();
+  for (const h of hoursAll || []) {
+    if (h && typeof h.time === "string") map.set(h.time, h);
+  }
+
+  const out = [];
+  const start = axisStartUTC instanceof Date ? axisStartUTC.getTime() : NaN;
+  const end = axisEndUTC instanceof Date ? axisEndUTC.getTime() : NaN;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return out;
+
+  const oneH = 60 * 60 * 1000;
+  let t = Math.floor(start / oneH) * oneH;
+  const tEnd = Math.ceil(end / oneH) * oneH;
+
+  for (; t < tEnd; t += oneH) {
+    const d = new Date(t);
+    const key = sunFmtISOKeyInTz(d, tz);
+    const found = map.get(key);
+    out.push(found ? found : { time: key, cloud: null, precipProb: null, precip: null, code: null });
+  }
+  return out;
+}
+
+
+function sunRenderFromRaw(raw) {
+  try {
+    if (!raw) return;
+    const mode = (typeof window !== "undefined" && window.__DA_SUN_MODE__ === "24h") ? "24h" : "photo";
+
+    // Axis window
+    let axisStartUTC, axisEndUTC;
+    if (mode === "24h") {
+      // Day in Iceland TZ (UTC): 00:00 .. 24:00
+      const d = sunNowInTz(SUN_TZ); // {y,m,d}
+      const dayStart = Date.UTC(d.y, d.m - 1, d.d, 0, 0, 0);
+      axisStartUTC = new Date(dayStart);
+      axisEndUTC = new Date(dayStart + 24 * 60 * 60 * 1000);
+    } else {
+      const extra = 2 * 60 * 60 * 1000;
+      axisStartUTC = new Date(raw.sunriseUTC.getTime() - extra);
+      axisEndUTC = new Date(raw.sunsetUTC.getTime() + extra);
+    }
+
+    const slots = (mode === "24h")
+      ? sunBuildHourlySlotsExclusive(raw.hoursAll, axisStartUTC, axisEndUTC, SUN_TZ)
+      : sunBuildHourlySlots(raw.hoursAll, axisStartUTC, axisEndUTC, SUN_TZ);
+    const nowUTC = new Date();
+
+    sunRender({
+      key: raw.key,
+      lat: raw.lat,
+      lon: raw.lon,
+      sunriseUTC: raw.sunriseUTC,
+      sunsetUTC: raw.sunsetUTC,
+      hours: slots || [],
+      tz: raw.tz || SUN_TZ,
+      nowUTC,
+    });
+
+    // Planung (+48h) aktualisieren, falls geöffnet
+    try {
+      if (sunPlanIsOpen && sunPlanIsOpen()) {
+        sunPlanRenderFromRaw(raw);
+      }
+    } catch (_) {}
+  } catch (_) {}
+}
+
+
+
+
+function sunFmtRelFromSpan(relMs){
+  try{
+    const diff = Number(relMs);
+    const sign = diff >= 0 ? "+" : "−";
+    const abs = Math.abs(diff);
+    const h = Math.floor(abs / (60*60*1000));
+    const m = Math.round((abs % (60*60*1000)) / (60*1000));
+    if (h <= 0) return `${sign}${m}m`;
+    return `${sign}${h}h ${m.toString().padStart(2,"0")}m`;
+  }catch(_){ return ""; }
+}
+
+function sunFmtRelFromNow(targetMs){
+  try{
+    const now = Date.now();
+    const diff = Number(targetMs) - now;
+    const sign = diff >= 0 ? "+" : "−";
+    const abs = Math.abs(diff);
+    const h = Math.floor(abs / (60*60*1000));
+    const m = Math.round((abs % (60*60*1000)) / (60*1000));
+    if (h <= 0) return `${sign}${m}m`;
+    return `${sign}${h}h ${m.toString().padStart(2,"0")}m`;
+  }catch(_){ return ""; }
+}
+
+// -------------------------
+// Planung (+48h) – Step 2
+// Gleiche Render-Logik, nur Zeit versetzt (keine neuen API Calls)
+// -------------------------
+
+function sunPlanIsOpen(){
+  try{
+    const trg = document.getElementById("sunPlanTrigger");
+    return !!(trg && trg.getAttribute("aria-expanded") === "true");
+  }catch(_){ return false; }
+}
+
+function sunPlanTargetDate(offsetDays){
+  try{
+    const d = sunNowInTz(SUN_TZ); // {y,m,d}
+    const base = Date.UTC(d.y, d.m - 1, d.d, 0, 0, 0);
+    const t = base + (offsetDays * 24 * 60 * 60 * 1000);
+    const dt = new Date(t);
+    return { y: dt.getUTCFullYear(), m: dt.getUTCMonth() + 1, d: dt.getUTCDate() };
+  }catch(_){
+    const dt = new Date(Date.now() + offsetDays * 24*60*60*1000);
+    return { y: dt.getUTCFullYear(), m: dt.getUTCMonth() + 1, d: dt.getUTCDate() };
+  }
+}
+
+function sunPlanDrawCurve(payload, selectedMs){
+  try{
+    const c = document.getElementById("sunPlanCurve");
+    if (!c || !c.getContext) return;
+    const ctx = c.getContext("2d");
+    if (!ctx) return;
+
+    const { sunriseUTC, sunsetUTC, axisStartUTC, axisEndUTC } = payload || {};
+    const hasAxis = (axisStartUTC instanceof Date) && (axisEndUTC instanceof Date);
+    const hasSun = (sunriseUTC instanceof Date) && (sunsetUTC instanceof Date);
+    if (!hasAxis && !hasSun) return;
+
+    const w = c.width || 680;
+    const h = c.height || 90;
+    ctx.clearRect(0, 0, w, h);
+
+    const padL = 26, padR = 10, padT = 10, padB = 18;
+    const x0 = padL, y0 = h - padB, x1 = w - padR, y1 = padT;
+
+    const mode = (typeof window !== "undefined" && window.__DA_SUN_MODE__ === "24h") ? "24h" : "photo";
+    let tStart, tEnd;
+    if (hasAxis) {
+      tStart = axisStartUTC.getTime();
+      tEnd = axisEndUTC.getTime();
+    } else if (mode === "24h") {
+      const y = sunriseUTC.getUTCFullYear();
+      const mo = sunriseUTC.getUTCMonth();
+      const da = sunriseUTC.getUTCDate();
+      tStart = Date.UTC(y, mo, da, 0, 0, 0);
+      tEnd = tStart + 24 * 60 * 60 * 1000;
+    } else {
+      const extra = 2 * 60 * 60 * 1000;
+      tStart = sunriseUTC.getTime() - extra;
+      tEnd = sunsetUTC.getTime() + extra;
+    }
+
+    const toX = (t) => x0 + ((t - tStart) / Math.max(1, (tEnd - tStart))) * (x1 - x0);
+    const toY = (altDeg) => {
+      const a = Math.max(-6, Math.min(60, altDeg));
+      const f = (a + 6) / 66;
+      return y0 - f * (y0 - y1);
+    };
+
+    // baseline
+    ctx.globalAlpha = 0.35;
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "rgba(255,255,255,0.20)";
+    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y0); ctx.stroke();
+
+    // curve
+    ctx.globalAlpha = 0.9;
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(255,210,80,0.75)";
+    ctx.beginPath();
+    const steps = 80;
+    for (let s = 0; s <= steps; s++) {
+      const t = tStart + (s / steps) * (tEnd - tStart);
+      const alt = sunCalcAltitudeDegUTC(payload.lat, payload.lon, new Date(t));
+      const x = toX(t);
+      const y = toY(alt);
+      if (s === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // selection marker (weiß, ruhig)
+    try{
+      const tSel = Number(selectedMs);
+      if (Number.isFinite(tSel)) {
+        const xSel = toX(tSel);
+
+        ctx.globalAlpha = 0.55;
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "rgba(255,255,255,0.35)";
+        ctx.beginPath(); ctx.moveTo(xSel, y1); ctx.lineTo(xSel, y0); ctx.stroke();
+
+        const altSel = sunCalcAltitudeDegUTC(payload.lat, payload.lon, new Date(tSel));
+        const ySel = Number.isFinite(altSel) ? toY(altSel) : y0;
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = "rgba(255,255,255,0.85)";
+        ctx.beginPath(); ctx.arc(xSel, ySel, 2.8, 0, Math.PI * 2); ctx.fill();
+      }
+    }catch(_){}
+  }catch(_){}
+}
+
+function sunPlanEnsureUIBind(){
+  try{
+    const slider = document.getElementById("sunPlanSlider");
+    if (slider && !slider.__sunPlanBound){
+      slider.addEventListener("input", (e) => {
+        try { sunPlanRenderSelectedIndex(Number(e.target.value) || 0); } catch (_) {}
+        try { sunStopAutoPlay(); } catch (_) {}
+      });
+      slider.__sunPlanBound = true;
+    }
+  }catch(_){}
+}
+
+function sunPlanBuildFineTimes(payload){
+  const fineTimes = [];
+  try{
+    const mode = (typeof window !== "undefined" && window.__DA_SUN_MODE__ === "24h") ? "24h" : "photo";
+    const FINE_STEP_MIN = 10;
+    const stepMs = FINE_STEP_MIN * 60 * 1000;
+
+    let tStartFine = null, tEndFine = null;
+
+    const hasAxis = (payload.axisStartUTC instanceof Date) && (payload.axisEndUTC instanceof Date);
+    if (hasAxis) {
+      tStartFine = payload.axisStartUTC.getTime();
+      tEndFine = payload.axisEndUTC.getTime();
+    }
+
+    const tSunrise = (payload.sunriseUTC instanceof Date) ? payload.sunriseUTC.getTime() : NaN;
+    const tSunset = (payload.sunsetUTC instanceof Date) ? payload.sunsetUTC.getTime() : NaN;
+
+    if (mode === "24h") {
+      const y = payload.sunriseUTC.getUTCFullYear();
+      const mo = payload.sunriseUTC.getUTCMonth();
+      const da = payload.sunriseUTC.getUTCDate();
+      tStartFine = Date.UTC(y, mo, da, 0, 0, 0);
+      tEndFine = tStartFine + 24 * 60 * 60 * 1000;
+    } else {
+      const extra = 2 * 60 * 60 * 1000;
+      tStartFine = tSunrise - extra;
+      tEndFine = tSunset + extra;
+    }
+
+    if (Number.isFinite(tStartFine) && Number.isFinite(tEndFine) && tEndFine > tStartFine) {
+      const start = Math.floor(tStartFine / stepMs) * stepMs;
+      const end = Math.ceil(tEndFine / stepMs) * stepMs;
+      for (let t = start; t <= end; t += stepMs) fineTimes.push(t);
+    }
+
+    return { fineTimes, stepMin: FINE_STEP_MIN };
+  }catch(_){ return { fineTimes, stepMin: 10 }; }
+}
+
+function sunPlanRender(payload){
+  try{
+    if (!payload) return;
+
+    sunPlanEnsureUIBind();
+
+    const axis = document.getElementById("sunPlanAxis");
+    const slider = document.getElementById("sunPlanSlider");
+    const ticks = document.getElementById("sunPlanTicks");
+    const hint = document.getElementById("sunPlanHint");
+    const canvas = document.getElementById("sunPlanCurve");
+    if (!axis || !slider || !ticks || !hint || !canvas) return;
+
+    const mode = (typeof window !== "undefined" && window.__DA_SUN_MODE__ === "24h") ? "24h" : "photo";
+    try{
+      axis.innerHTML = (payload.axisStartUTC instanceof Date && payload.axisEndUTC instanceof Date) ? `<span>+0h</span><span>+48h</span>` : ((mode === "24h") ? `<span>00:00</span><span>24:00</span>` : `<span>−2h</span><span>+2h</span>`);
+    }catch(_){}
+
+    const bt = sunPlanBuildFineTimes(payload);
+    const fineTimes = bt.fineTimes || [];
+    try{
+      window.__DA_SUN_PLAN_FINE_TIMES__ = fineTimes;
+      window.__DA_SUN_PLAN_LAST_PAYLOAD__ = payload;
+      window.__DA_SUN_PLAN_STEP_MIN__ = bt.stepMin;
+    }catch(_){}
+
+    slider.min = 0;
+    slider.max = String(Math.max(0, fineTimes.length - 1));
+    slider.step = "1";
+
+    // ticks: hourly icons
+    ticks.innerHTML = "";
+    try{
+      const hours = payload.hours || [];
+      for (let i = 0; i < hours.length; i++) {
+        const h = hours[i];
+        const tLab = (()=>{ try { return sunFmtHHMM(sunParseISOToUTC(h.time), payload.tz); } catch(_){ return ""; } })();
+        const hasAxis = (payload.axisStartUTC instanceof Date) && (payload.axisEndUTC instanceof Date);
+        let label = "";
+        if (hasAxis) {
+          const off = i + 1; // Slots starten bei nächster voller Stunde => erste = +1h
+          if (off === 1 || off === 48 || (off % 6 === 0)) label = `+${off}h`;
+        } else {
+          label = (mode === "24h") ? (i % 3 === 0 ? tLab : "") : tLab;
+        }
+        const emoji = (()=>{ try { return sunIconForHour(h, payload); } catch(_){ return "•"; } })();
+
+        const el = document.createElement("div");
+        el.style.flex = "1";
+        el.style.minWidth = "0";
+        el.style.textAlign = "center";
+        el.style.opacity = ".92";
+        el.innerHTML = `<div style="font-size:14px; line-height:1;">${emoji}</div><div style="margin-top:2px;">${label}</div>`;
+        ticks.appendChild(el);
+      }
+    }catch(_){}
+
+    // default selection: now+48 rounded to 10min
+    let defIdx = 0;
+    try{
+      const stepMs = (bt.stepMin || 10) * 60 * 1000;
+      const nowT = (payload.nowUTC instanceof Date ? payload.nowUTC.getTime() : Date.now());
+      const nowR = Math.round(nowT / stepMs) * stepMs;
+      let best = 0, bestDiff = Infinity;
+      for (let i=0;i<fineTimes.length;i++){
+        const d = Math.abs((fineTimes[i]||0) - nowR);
+        if (d < bestDiff){ bestDiff = d; best = i; }
+      }
+      defIdx = best;
+    }catch(_){}
+
+    slider.value = String(defIdx);
+    sunPlanRenderSelectedIndex(defIdx);
+
+  }catch(_){}
+}
+
+function sunPlanNearestHourIndex(payload, tMs){
+  try{
+    if (!payload || !Array.isArray(payload.hours) || !payload.hours.length) return 0;
+    let best = 0, bestDiff = Infinity;
+    for (let i=0;i<payload.hours.length;i++){
+      const tt = sunParseISOToUTC(payload.hours[i].time).getTime();
+      const d = Math.abs(tt - tMs);
+      if (d < bestDiff){ bestDiff = d; best = i; }
+    }
+    return best;
+  }catch(_){ return 0; }
+}
+
+function sunPlanInterpFromHourly(payload, tMs){
+  const out = { cloud: NaN, precipProb: NaN, precip: NaN, isExactHour: false };
+  try{
+    if (!payload || !Array.isArray(payload.hours) || !payload.hours.length) return out;
+    const times = payload.hours.map(h => sunParseISOToUTC(h.time).getTime());
+    let j = 0;
+    for (let i=0;i<times.length;i++){
+      if (times[i] <= tMs) j = i;
+      if (times[i] > tMs) break;
+    }
+    const t0 = times[j];
+    const h0 = payload.hours[j];
+    const t1 = (j+1 < times.length) ? times[j+1] : t0;
+    const h1 = (j+1 < times.length) ? payload.hours[j+1] : h0;
+
+    out.isExactHour = (Math.abs(tMs - t0) < 1000);
+
+    const lerp = (a,b,f)=>a+(b-a)*f;
+    const f = (t1 === t0) ? 0 : Math.max(0, Math.min(1, (tMs - t0) / (t1 - t0)));
+
+    const c0 = Number(h0.cloud), c1 = Number(h1.cloud);
+    const p0 = Number(h0.precipProb), p1 = Number(h1.precipProb);
+    const r0 = Number(h0.precip), r1 = Number(h1.precip);
+
+    out.cloud = (isFinite(c0) && isFinite(c1)) ? lerp(c0,c1,f) : (isFinite(c0) ? c0 : NaN);
+    out.precipProb = (isFinite(p0) && isFinite(p1)) ? lerp(p0,p1,f) : (isFinite(p0) ? p0 : NaN);
+    out.precip = (isFinite(r0) && isFinite(r1)) ? lerp(r0,r1,f) : (isFinite(r0) ? r0 : NaN);
+    return out;
+  }catch(_){ return out; }
+}
+
+function sunPlanRenderSelectedIndex(idx){
+  try{
+    const payload = (typeof window !== "undefined" && window.__DA_SUN_PLAN_LAST_PAYLOAD__) ? window.__DA_SUN_PLAN_LAST_PAYLOAD__ : null;
+    const fineTimes = (typeof window !== "undefined" && Array.isArray(window.__DA_SUN_PLAN_FINE_TIMES__)) ? window.__DA_SUN_PLAN_FINE_TIMES__ : [];
+    const hint = document.getElementById("sunPlanHint");
+    const ticks = document.getElementById("sunPlanTicks");
+    if (!payload || !fineTimes.length || !hint || !ticks) return;
+
+    const i = sunClamp(Number(idx) || 0, 0, fineTimes.length - 1);
+    const selT = fineTimes[i];
+
+    const hi = sunPlanNearestHourIndex(payload, selT);
+    for (let k=0;k<ticks.children.length;k++){
+      try{ ticks.children[k].style.opacity = (k === hi) ? "1" : ".85"; }catch(_){}
+    }
+
+    const t = sunFmtHHMM(new Date(selT), payload.tz);
+    const w = sunPlanInterpFromHourly(payload, selT);
+
+    const approx = w.isExactHour ? "" : "~";
+    const ccTxt = Number.isFinite(w.cloud) ? `${approx}${Math.round(w.cloud)}% Bewölkung` : "Bewölkung —";
+    const ppTxt = Number.isFinite(w.precipProb) ? `${approx}${Math.round(w.precipProb)}% Regenrisiko` : "Regenrisiko —";
+    const prTxt = Number.isFinite(w.precip) ? `${approx}${w.precip.toFixed(1)} mm` : "—";
+
+    {
+      const hasAxis = (payload.axisStartUTC instanceof Date) && (payload.axisEndUTC instanceof Date);
+      if (hasAxis) {
+        const span = payload.axisEndUTC.getTime() - payload.axisStartUTC.getTime();
+        const relMs = (span > 0 && fineTimes.length > 1) ? (i / (fineTimes.length - 1)) * span : (selT - payload.axisStartUTC.getTime());
+        hint.innerHTML = `Auswahl <b>${sunFmtRelFromSpan(relMs)}</b><span style="opacity:.55;font-weight:400;"> (${t})</span>: ${ccTxt} • ${ppTxt} • Niederschlag: <b>${prTxt}</b>`;
+      } else {
+        hint.innerHTML = `Auswahl <b>${sunFmtRelFromNow(selT)}</b><span style="opacity:.55;font-weight:400;"> (${t})</span>: ${ccTxt} • ${ppTxt} • Niederschlag: <b>${prTxt}</b>`;
+      }
+    }
+
+    try{ sunPlanDrawCurve(payload, selT); }catch(_){}
+  }catch(_){}
+}
+
+function sunPlanRenderFromRaw(raw){
+  try{
+    if (!raw) return;
+    const body = document.getElementById("sunPlanBody");
+    if (!body) return;
+
+    // Ziel: nächste 48h ab JETZT (nicht „in 2 Tagen“)
+    const nowMs = Date.now();
+    const axisStartUTC = new Date(nowMs);
+    const axisEndUTC = new Date(nowMs + 48 * 60 * 60 * 1000);
+
+    // Slots aus vorhandenen Open‑Meteo Stunden (keine neuen Calls)
+    // Icons/Slots beginnen bei der NÄCHSTEN vollen Stunde: +1h ... +48h
+    const H = 60 * 60 * 1000;
+    const startSlotsUTC = new Date(Math.ceil(nowMs / H) * H);
+    const endSlotsUTC = new Date(startSlotsUTC.getTime() + 48 * H);
+    const slots = sunBuildHourlySlots(raw.hoursAll, startSlotsUTC, endSlotsUTC, SUN_TZ);
+
+    // Sonnenzeiten nur als Fallback (für bestehende Logik, falls gebraucht)
+    let sTimes = null;
+    try{
+      const d0 = sunNowInTz(SUN_TZ);
+      sTimes = sunCalcSunTimesUTC(raw.lat, raw.lon, d0.y, d0.m, d0.d);
+    }catch(_){}
+
+    sunPlanRender({
+      key: raw.key + "_p48",
+      lat: raw.lat,
+      lon: raw.lon,
+      sunriseUTC: (sTimes && sTimes.sunrise instanceof Date) ? sTimes.sunrise : new Date(nowMs),
+      sunsetUTC: (sTimes && sTimes.sunset instanceof Date) ? sTimes.sunset : new Date(nowMs + 12*60*60*1000),
+      axisStartUTC,
+      axisEndUTC,
+      hours: slots || [],
+      tz: raw.tz || SUN_TZ,
+      nowUTC: new Date(nowMs),
+    });
+  }catch(_){}
+}
+
+async function sunUpdate(lat, lon, force = false) {
+  try {
+    sunEnsureUI();
+
+    const now = Date.now();
+    const key = `${lat.toFixed(3)},${lon.toFixed(3)}`;
+
+    if (!force) {
+      if (now - sunLastFetchAt < SUN_THROTTLE_MS) return;
+      if (key === sunLastKey && now - sunLastFetchAt < (SUN_THROTTLE_MS * 2)) return;
+    }
+
+    sunLastFetchAt = now;
+    sunLastKey = key;
+
+    // Sonnenzeiten für "heute" in Island-TZ
+    const d = sunNowInTz(SUN_TZ);
+    const times = sunCalcSunTimesUTC(lat, lon, d.y, d.m, d.d);
+
+    const hourlyRaw = await sunFetchHourly(lat, lon, SUN_TZ);
+    
+    const hoursAll = sunNormalizeHourly(hourlyRaw);
+    // Raw speichern (für Umschalten ohne neue API Calls)
+    try{
+      window.__DA_SUN_RAW__ = {
+        key,
+        lat,
+        lon,
+        sunriseUTC: times.sunrise,
+        sunsetUTC: times.sunset,
+        hoursAll: (Array.isArray(hoursAll) ? hoursAll : []),
+        tz: SUN_TZ,
+      };
+    }catch(_){}
+
+    // Rendern je nach Modus (photo / 24h) – Slots werden lokal gebaut
+    try { sunRenderFromRaw(window.__DA_SUN_RAW__); } catch (_) {}
+  } catch (_) {
+    // leise bleiben – kein Error-Spam in der Konsole
+    try { sunRenderSkeleton(); } catch (_) {}
+  }
+}
+
+function sunInstallHooks() {
+  if (sunHooksInstalled) return;
+  if (typeof marker === "undefined" || !marker) return;
+
+  sunEnsureUI();
+
+  const onMove = () => {
+    try {
+      const p = marker.getLatLng();
+      sunUpdate(p.lat, p.lng, false);
+    } catch (_) {}
+  };
+
+  try { marker.on("drag", onMove); } catch (_) {}
+  try { marker.on("dragend", onMove); } catch (_) {}
+
+  // updateMap hooken (nur wenn nicht schon)
+  try {
+    if (typeof updateMap === "function" && !updateMap.__sunWrapped) {
+      const _u = updateMap;
+      const wrapped = function(lat, lon, accuracyMeters = null) {
+        const r = _u(lat, lon, accuracyMeters);
+        try { sunUpdate(lat, lon, true); } catch (_) {}
+        return r;
+      };
+      wrapped.__sunWrapped = true;
+      updateMap = wrapped;
+    }
+  } catch (_) {}
+
+  // Initial
+  try {
+    const p = marker.getLatLng();
+    sunUpdate(p.lat, p.lng, true);
+  } catch (_) {}
+
+  sunHooksInstalled = true;
+}
+
+// warten bis marker existiert
+const sunWait = setInterval(() => {
+  if (typeof marker !== "undefined" && marker) {
+    sunInstallHooks();
+    clearInterval(sunWait);
+  }
+}, 220);
+
+// UI early
+document.addEventListener("DOMContentLoaded", () => {
+  try { sunEnsureUI(); } catch (_) {}
+});
+
+
+
+// =============================
+// Map resize hook for collapsible panel
+// =============================
+(function(){
+  'use strict';
+  document.addEventListener('da:panel', function(ev){
+    const d = ev && ev.detail ? ev.detail : null;
+    if (!d || d.panelId !== 'map' || !d.open) return;
+
+    // Leaflet needs a nudge after the panel expands
+    setTimeout(function(){
+      try{
+        const m = window.__DA_LEAFLET_MAP__;
+        if (m && typeof m.invalidateSize === 'function') m.invalidateSize();
+      }catch(_){}
+    }, 230);
+  });
+})();
+
+// =============================
+// Collapsible Panels (Step 2)
+// - Additiv, session-only (sessionStorage)
+// - Soft animation (~200ms) via max-height + opacity
+// - Multiple panels can be open simultaneously
+// =============================
+(function(){
+  'use strict';
+
+  const PANEL_STATE_KEY = 'droneampel_panels_v1';
+  const panelState = loadPanelState();
+  const registry = Object.create(null); // panelId -> panelEl
+
+  function safeParse(json){
+    try { return JSON.parse(json); } catch(_){ return null; }
+  }
+
+  function loadPanelState(){
+    try{
+      const raw = sessionStorage.getItem(PANEL_STATE_KEY);
+      const obj = raw ? safeParse(raw) : null;
+      return (obj && typeof obj === 'object') ? obj : {};
+    }catch(_){
+      return {};
+    }
+  }
+
+  function savePanelState(state){
+    try{
+      sessionStorage.setItem(PANEL_STATE_KEY, JSON.stringify(state || {}));
+    }catch(_){}
+  }
+
+  function isOpen(panelId, fallbackOpen=true){
+    if (!panelId) return fallbackOpen;
+    if (Object.prototype.hasOwnProperty.call(panelState, panelId)){
+      return !!panelState[panelId];
+    }
+    return !!fallbackOpen;
+  }
+
+  function emit(panelId, open){
+    try{
+      document.dispatchEvent(new CustomEvent('da:panel', { detail: { panelId: panelId, open: !!open } }));
+    }catch(_){}
+  }
+
+  function setOpen(panelId, open){
+    if (!panelId) return;
+    panelState[panelId] = !!open;
+    savePanelState(panelState);
+    applyPanel(panelId);
+    emit(panelId, open);
+  }
+
+  function ensurePrepared(panelEl){
+    if (!panelEl || panelEl.dataset.panelPrepared === '1') return;
+
+    const body = panelEl.querySelector('[data-panel-body]');
+    if (!body) { panelEl.dataset.panelPrepared = '1'; return; }
+
+    body.style.overflow = 'hidden';
+    body.style.willChange = 'max-height, opacity';
+    body.style.transition = 'max-height 200ms ease, opacity 200ms ease';
+
+    const btn = panelEl.querySelector('[data-panel-toggle]');
+    if (btn){
+      btn.style.border = '1px solid rgba(255,255,255,0.12)';
+      btn.style.background = 'rgba(255,255,255,0.06)';
+      btn.style.color = 'inherit';
+      btn.style.borderRadius = '999px';
+      btn.style.width = '28px';
+      btn.style.height = '28px';
+      btn.style.display = 'inline-flex';
+      btn.style.alignItems = 'center';
+      btn.style.justifyContent = 'center';
+      btn.style.cursor = 'pointer';
+      btn.style.lineHeight = '1';
+      btn.style.padding = '0';
+      btn.style.userSelect = 'none';
+      btn.style.transition = 'transform 200ms ease, opacity 200ms ease';
+      btn.setAttribute('aria-expanded', 'true');
+    }
+
+    panelEl.dataset.panelPrepared = '1';
+  }
+
+  function applyPanel(panelId){
+    const panelEl = registry[panelId] || document.querySelector('[data-panel-id="'+panelId+'"][data-panel-collapsible="1"]');
+    if (!panelEl) return;
+
+    ensurePrepared(panelEl);
+
+    const body = panelEl.querySelector('[data-panel-body]');
+    if (!body) return;
+
+    const open = isOpen(panelId, true);
+
+    // Update chevron / aria
+    const btn = panelEl.querySelector('[data-panel-toggle="'+panelId+'"]') || panelEl.querySelector('[data-panel-toggle]');
+    if (btn){
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      btn.style.transform = open ? 'rotate(0deg)' : 'rotate(-90deg)';
+      btn.style.opacity = open ? '1' : '0.9';
+    }
+
+    // Measure & animate
+    if (open){
+      body.style.opacity = '1';
+      body.style.maxHeight = '0px';
+      requestAnimationFrame(function(){
+        const h = body.scrollHeight;
+        body.style.maxHeight = (h > 0 ? h : 0) + 'px';
+      });
+    }else{
+      const h = body.scrollHeight;
+      body.style.maxHeight = (h > 0 ? h : 0) + 'px';
+      requestAnimationFrame(function(){
+        body.style.maxHeight = '0px';
+        body.style.opacity = '0';
+      });
+    }
+  }
+
+  // Called by feature boxes when they are created
+  function register(panelEl, panelId, defaultOpen=true){
+    if (!panelEl || !panelId) return;
+
+    registry[panelId] = panelEl;
+
+    // If state not set yet, set default (session-only)
+    if (!Object.prototype.hasOwnProperty.call(panelState, panelId)){
+      panelState[panelId] = !!defaultOpen;
+      savePanelState(panelState);
+    }
+
+    applyPanel(panelId);
+  }
+
+  // Event delegation: Buttons/Links mit data-panel-toggle="panelId"
+  document.addEventListener('click', function(ev){
+    const t = ev.target && ev.target.closest ? ev.target.closest('[data-panel-toggle]') : null;
+    if (!t) return;
+
+    const panelId = t.getAttribute('data-panel-toggle') || '';
+    if (!panelId) return;
+
+    // prevent accidental form submission / focus weirdness
+    ev.preventDefault();
+
+    const next = !isOpen(panelId, true);
+    setOpen(panelId, next);
+  });
+
+  // Expose hooks
+  window.__DA_PANEL__ = window.__DA_PANEL__ || {};
+  window.__DA_PANEL__.isOpen = isOpen;
+  window.__DA_PANEL__.setOpen = setOpen;
+  window.__DA_PANEL__.register = register;
+})();
+
+
+// =============================
+// Sun Extended Timeline (Step 4 – 24h + Live + 10min)
+// Additiv – keine bestehende Funktion wird ersetzt
+// =============================
+(function(){
+  'use strict';
+
+  // ---- MODE STATE ----
+  let __DA_SUN_MODE__ = 'photo'; // photo | 24h
+  try{ window.__DA_SUN_MODE__ = __DA_SUN_MODE__; }catch(_){ }
+  // sync label to current mode (button is rendered dynamically later; delegation will still work)
+  try{
+    document.addEventListener('da:nowtick', function once(){
+      const t = document.getElementById('sunModeToggle') || document.querySelector('[data-sun-mode-toggle="1"]');
+      if (t) { t.textContent = (window.__DA_SUN_MODE__ === 'photo') ? 'Foto' : '24h'; document.removeEventListener('da:nowtick', once); }
+    });
+  }catch(_){}
+
+
+  document.addEventListener('click', function(ev){
+    const t = ev.target && ev.target.closest ? ev.target.closest('#sunModeToggle,[data-sun-mode-toggle="1"]') : null;
+    if (!t) return;
+
+    ev.preventDefault();
+
+    __DA_SUN_MODE__ = (__DA_SUN_MODE__ === 'photo') ? '24h' : 'photo';
+    try{ window.__DA_SUN_MODE__ = __DA_SUN_MODE__; }catch(_){ }
+    t.textContent = (__DA_SUN_MODE__ === 'photo') ? 'Foto' : '24h';
+
+    try{
+      document.dispatchEvent(new CustomEvent('da:sunmode', { detail:{ mode: __DA_SUN_MODE__ }}));
+    }catch(e){}
+  });
+
+  // ---- LIVE MARKER ----
+  function emitNow(){
+    try{
+      document.dispatchEvent(new CustomEvent('da:nowtick', { detail:{ now: Date.now() }}));
+    }catch(e){}
+  }
+  setInterval(emitNow, 1000);
+
+
+  // Re-render on mode change without refetch
+  document.addEventListener('da:sunmode', function(){
+    try{
+      if (window.__DA_SUN_RAW__) sunRenderFromRaw(window.__DA_SUN_RAW__);
+    }catch(_){}
+  });
+
+
+  // ---- TIME GRID HELPER ----
+  function roundTo10Min(ts){
+    const d = new Date(ts);
+    const m = d.getUTCMinutes();
+    const rounded = Math.round(m/10)*10;
+    d.setUTCMinutes(rounded);
+    d.setUTCSeconds(0);
+    return d.getTime();
+  }
+
+  // ---- WEATHER INTERPOLATION HELPER ----
+  window.__DA_INTERPOLATE_WEATHER__ = function(t, t0, t1, v0, v1){
+    if (!isFinite(t0) || !isFinite(t1) || t1 === t0) return v0;
+    const f = Math.max(0, Math.min(1, (t - t0) / (t1 - t0)));
+    return v0 + (v1 - v0) * f;
+  };
+
+})();
+
+/* pad-step25:............................................................................................................................................................................................................................*/
+
+/* pad ........................................................................................ */
+
+/* pad */
