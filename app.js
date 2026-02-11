@@ -282,12 +282,51 @@ function initMap() {
     map.on("moveend", () => { try { map.panInsideBounds(b, { animate: false }); } catch (_) {} });
   } catch (_) {}
 
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19,
-    noWrap: true,
-    bounds: getIcelandBounds(),
-    attribution: "&copy; OpenStreetMap contributors",
-  }).addTo(map);
+// Base Tiles (Step14): robust gegen einzelne Tile-Hosts (SSL/RateLimit/Proxy)
+// Idee: wir vermeiden gezielt das "c." Subdomain (kommt in der Praxis öfter als Ausreißer),
+// und schalten bei mehreren Fehlern innerhalb kurzer Zeit automatisch auf Fallback um.
+const __tileOpts = {
+  maxZoom: 19,
+  noWrap: true,
+  bounds: getIcelandBounds(),
+  attribution: "&copy; OpenStreetMap contributors",
+  updateWhenIdle: true,
+  // bewusst ohne "c" um SSL-Glitches / Blockaden zu umgehen
+  subdomains: ["a","b"],
+};
+
+let __baseTileLayer = null;
+const __tileFail = { count: 0, t0: 0, switched: false };
+
+function __attachTileErrorHandler(layer){
+  layer.on("tileerror", () => {
+    const now = Date.now();
+    if(!__tileFail.t0 || (now - __tileFail.t0) > 5000){
+      __tileFail.t0 = now;
+      __tileFail.count = 0;
+    }
+    __tileFail.count++;
+
+    // nach 3 Fehlern/5s: Fallback schalten (einmalig)
+    if(!__tileFail.switched && __tileFail.count >= 3){
+      __tileFail.switched = true;
+      try { map.removeLayer(layer); } catch(_){}
+
+      // Fallback: anderer OSM Tile Host (gleiches Daten-Ökosystem)
+      __baseTileLayer = L.tileLayer("https://tile.openstreetmap.de/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        noWrap: true,
+        bounds: getIcelandBounds(),
+        attribution: "&copy; OpenStreetMap contributors",
+        updateWhenIdle: true,
+      }).addTo(map);
+    }
+  });
+}
+
+__baseTileLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", __tileOpts).addTo(map);
+__attachTileErrorHandler(__baseTileLayer);
+
 
   // Welt-Maske: alles außerhalb Islands abdunkeln (nur visuell)
   try {
@@ -5097,3 +5136,1379 @@ document.addEventListener("DOMContentLoaded", () => {
 /* pad ........................................................................................ */
 
 /* pad */
+
+
+// =============================
+// AURORA BOX (KP + Wolken) – 48h Planung
+// Offiziell: NOAA / SWPC (planetary K-index 3-day)
+// Standort: Wolken/Regen via Open-Meteo (wie Sun/Wind)
+// Additiv – keine bestehende Funktion wird ersetzt
+// =============================
+(function(){
+  'use strict';
+
+  const AURORA_PANEL_ID = 'aurora';
+  const AURORA_KP_URLS_REMOTE = [
+  "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json",
+  "https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json"
+];
+
+// Local-first (silent) for localhost dev: accept NOAA original filenames and our short aliases.
+const AURORA_KP_URLS_LOCAL = [
+  "./data/noaa-planetary-k-index.json",
+  "./data/noaa-planetary-k-index-forecast.json"
+];
+
+const AURORA_KP_URLS = (() => {
+  const h = (window.location && window.location.hostname) ? window.location.hostname : "";
+  const isLocal = (h === "localhost" || h === "127.0.0.1");
+  return isLocal ? AURORA_KP_URLS_LOCAL : AURORA_KP_URLS_REMOTE;
+})();
+const AURORA_THROTTLE_MS = 90 * 1000;
+
+  let auroraHooksInstalled = false;
+  let auroraLastFetchAt = 0;
+  let auroraLastKey = '';
+  let auroraSelectedIdx = 0; // 0..48 (0 = jetzt)
+  let auroraKpSeries = null; // array length 49
+  let auroraWxSeries = null; // array length 49 {cloud, pp, pr}
+  let auroraNow0 = 0;
+
+// helper: update selection from any Aurora bar click (NOW or +48h)
+function setAuroraSelectedIdx(i){
+  const idx = Math.max(0, Math.min(48, Math.round(Number(i) || 0)));
+  auroraSelectedIdx = idx;
+  try{ renderAurora(); }catch(_){}
+}
+
+
+  function auroraQual(kp){
+    if (!isFinite(kp)) return '—';
+    if (kp >= 7) return 'sehr wahrscheinlich';
+    if (kp >= 5) return 'wahrscheinlich';
+    if (kp >= 4) return 'möglich';
+    return 'gering';
+  }
+
+  function pad2(n){ return String(n).padStart(2,'0'); }
+  function fmtClockUTC(ms){
+    const d = new Date(ms);
+    return pad2(d.getUTCHours()) + ':' + pad2(d.getUTCMinutes());
+  }
+
+  function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
+
+  
+// Step11: Hybrid timeline under 48h plan (3h ticks + Keymarks: Sunrise/Sunset/00:00)
+function fmtHHMM(d, tz){
+  // Always show Iceland (Atlantic/Reykjavik) clock unless a different tz is explicitly passed.
+  const useTz = tz || (typeof SUN_TZ === "string" ? SUN_TZ : "Atlantic/Reykjavik");
+  try{
+    return new Intl.DateTimeFormat("de-DE", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      timeZone: useTz
+    }).format(d);
+  }catch(_){
+    // Fallback: local time (should be rare)
+    const h = String(d.getHours()).padStart(2,'0');
+    const m = String(d.getMinutes()).padStart(2,'0');
+    return `${h}:${m}`;
+  }
+}
+
+// Aurora darkness model (photographer-friendly):
+// Sun altitude >= -0.833° → day (0), <= -6° → night (1), smooth in-between.
+function auroraDarknessFactorFromSunAlt(altDeg){
+  const DAY_LIMIT = -0.833; // refraction-adjusted horizon
+  const NIGHT_LIMIT = -6.0; // civil twilight end (practical)
+  if (!isFinite(altDeg)) return 0;
+  if (altDeg >= DAY_LIMIT) return 0;
+  if (altDeg <= NIGHT_LIMIT) return 1;
+  return (DAY_LIMIT - altDeg) / (DAY_LIMIT - NIGHT_LIMIT);
+}
+
+function auroraDarknessFactorUTC(lat, lon, dateUTC){
+  const alt = sunCalcAltitudeDegUTC(lat, lon, dateUTC);
+  return auroraDarknessFactorFromSunAlt(alt);
+}
+
+
+function renderAuroraTimeline48(baseMs, lat, lon){
+  const el = document.getElementById('auroraTimeline48');
+  if (!el) return;
+
+  // Keep the baseline (first child), rebuild everything else
+  while (el.children.length > 1) el.removeChild(el.lastChild);
+
+  const hours = 49; // 0..48
+  const W = 100;    // percent
+
+  // 3h ticks (quiet)
+// Photographer grid: hourly ticks, labels every 2 hours (quiet, but readable)
+for (let h=0; h<=48; h+=1){
+  const x = (h/48)*W;
+  const t = new Date(baseMs + h*3600*1000);
+
+  const tick = document.createElement('div');
+  tick.style.position = 'absolute';
+  tick.style.left = x.toFixed(3) + '%';
+  tick.style.top = '18px';
+  tick.style.width = '1px';
+  tick.style.height = (h % 6 === 0) ? '14px' : (h % 2 === 0 ? '10px' : '6px');
+  tick.style.background = (h % 6 === 0) ? 'rgba(255,255,255,.22)' : 'rgba(255,255,255,.14)';
+  tick.style.transform = 'translateX(-0.5px)';
+  el.appendChild(tick);
+
+  if (h % 2 === 0){
+    const lab = document.createElement('div');
+    lab.textContent = fmtHHMM(t);
+    lab.style.position = 'absolute';
+    lab.style.left = x.toFixed(3) + '%';
+    lab.style.top = '2px';
+    lab.style.fontSize = '10px';
+    lab.style.opacity = (h % 6 === 0) ? '.55' : '.38';
+    lab.style.transform = 'translateX(-50%)';
+    lab.style.whiteSpace = 'nowrap';
+    el.appendChild(lab);
+  }
+}
+
+// Step15: NOW night-window timeline (2h grid, photographer-friendly)
+function renderAuroraNowTimeline2h(winStartMs, winEndMs){
+  const el = document.getElementById('auroraNowTimeline2h');
+  if (!el) return;
+
+  // ---- Layout: timeline must live clearly *under* the bars (photographer-first) ----
+  const wrap = document.getElementById('auroraNowWrap');
+  if (wrap){
+    // Give room for axis + labels
+    wrap.style.height = '156px';
+  }
+  el.style.position = 'absolute';
+  el.style.left = '0';
+  el.style.right = '0';
+  el.style.bottom = '0';
+  el.style.height = '46px';
+  el.style.marginTop = '0';
+  el.style.opacity = '.95';
+  el.style.pointerEvents = 'none';
+
+    el.style.zIndex = '50';
+// Keep baseline line (first child), rebuild everything else
+  while (el.children.length > 1) el.removeChild(el.lastChild);
+
+  const baseLine = el.children[0];
+  if (baseLine){
+    baseLine.style.top = '20px';
+    baseLine.style.background = 'rgba(255,255,255,.16)';
+  }
+
+  const spanMs = Math.max(1, winEndMs - winStartMs);
+
+  // Helper: minutes since midnight
+  const minsOf = (d)=> d.getHours()*60 + d.getMinutes();
+
+  // Photographer axis: ticks each hour, labels each hour (clear planning).
+  const stepMin = 60;
+
+  const start = new Date(winStartMs);
+  const end   = new Date(winEndMs);
+
+  // First tick: next full hour after start (real clock alignment)
+  const first = new Date(start.getTime());
+  first.setSeconds(0,0);
+  if (first.getMinutes() !== 0) first.setMinutes(0,0,0);
+  if (first.getTime() <= winStartMs) first.setHours(first.getHours() + 1);
+
+  const mkTick = (xPct, isMajor)=>{
+    const tick = document.createElement('div');
+    tick.style.position = 'absolute';
+    tick.style.left = xPct.toFixed(3) + '%';
+    tick.style.top = '12px';
+    tick.style.width = isMajor ? '3px' : '2px';
+    tick.style.height = isMajor ? '18px' : '12px';
+    tick.style.background = isMajor ? 'rgba(255,255,255,.48)' : 'rgba(255,255,255,.30)';
+    tick.style.transform = 'translateX(-1px)';
+    tick.style.borderRadius = '2px';
+    tick.style.zIndex = '60';
+    el.appendChild(tick);
+  };
+
+  const mkLabel = (xPct, txt, isMajor)=>{
+    const lab = document.createElement('div');
+    lab.textContent = txt;
+    lab.style.position = 'absolute';
+    lab.style.left = xPct.toFixed(3) + '%';
+    lab.style.top = '30px';
+    lab.style.fontSize = '11px';
+        lab.style.color = 'rgba(255,255,255,.82)';
+lab.style.opacity = isMajor ? '.82' : '.70';
+    lab.style.transform = 'translateX(-50%)';
+    lab.style.whiteSpace = 'nowrap';
+    lab.style.pointerEvents = 'none';
+    lab.style.zIndex = '60';
+    el.appendChild(lab);
+  };
+
+  // Iterate hour-by-hour between start and end
+  for (let t = first.getTime(); t <= winEndMs; t += stepMin*60*1000){
+    const x = ((t - winStartMs) / spanMs) * 100;
+    if (x < 0 || x > 100) continue;
+
+    const d = new Date(t);
+    // Major ticks every 2 hours (still label every hour, but give stronger rhythm)
+    const isMajor = (minsOf(d) % 120) === 0;
+    mkTick(x, isMajor);
+    mkLabel(x, fmtHHMM(d), isMajor);
+  }
+}
+
+// Step 17b: Photographer-first hour axis UNDER the NOW bars (so a KP spike has an instant clock time)
+function renderAuroraNowHourAxis(winStartMs, winEndMs, barsEl){
+  // RAW timeline: start at current window-start time (left) and run in 1h steps to the right.
+  // Must survive refresh and be *visibly* under the NOW bars.
+  if(!barsEl) return;
+
+  const wrap = document.getElementById('auroraNowWrap') || (barsEl.closest ? barsEl.closest('#auroraNowWrap') : null);
+  if(!wrap) return;
+
+  // Make sure we have vertical room (bars + axis)
+  wrap.style.height = '170px';
+  wrap.style.overflow = 'visible';
+
+  // Create / reuse axis container INSIDE the wrap (absolute bottom)
+  let axisEl = document.getElementById('auroraNowHourAxis');
+  if(!axisEl){
+    axisEl = document.createElement('div');
+    axisEl.id = 'auroraNowHourAxis';
+    axisEl.style.position = 'absolute';
+    axisEl.style.left = '0';
+    axisEl.style.right = '0';
+    axisEl.style.bottom = '6px';
+    axisEl.style.height = '22px';
+    axisEl.style.display = 'grid';
+    axisEl.style.alignItems = 'end';
+    axisEl.style.fontSize = '12px';
+    axisEl.style.lineHeight = '1';
+    axisEl.style.color = '#2f8cff'; // BLUE on purpose: debugging visibility
+    axisEl.style.userSelect = 'none';
+    axisEl.style.pointerEvents = 'none';
+    axisEl.style.opacity = '0.98';
+    axisEl.style.whiteSpace = 'nowrap';
+    axisEl.style.zIndex = '60';
+    axisEl.style.paddingTop = '6px';
+    axisEl.style.borderTop = '1px solid rgba(255,255,255,.10)';
+    wrap.appendChild(axisEl);
+  }
+
+  // Ensure bars don't overlap the axis (give them bottom space)
+  barsEl.style.marginBottom = '30px';
+
+  // Clear
+  axisEl.innerHTML = '';
+
+  if(!isFinite(winStartMs) || !isFinite(winEndMs) || winEndMs <= winStartMs) return;
+
+  const spanMs = winEndMs - winStartMs;
+  const hours = Math.max(1, Math.floor(spanMs / (3600*1000)));
+  const cols = hours + 1; // include start and end ticks
+
+  axisEl.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+  axisEl.style.gap = '0px';
+
+  const fmt = (ms)=>{
+    const d = new Date(ms);
+    return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+  };
+
+  for(let i=0;i<=hours;i++){
+    const t = winStartMs + i*3600*1000;
+    const lab = document.createElement('div');
+    lab.textContent = fmt(t);
+    lab.style.textAlign = (i===0) ? 'left' : (i===hours ? 'right' : 'center');
+    lab.style.opacity = (i%2===0 || i===0 || i===hours) ? '0.98' : '0.72';
+    axisEl.appendChild(lab);
+  }
+}
+
+
+
+
+
+  // Keymarks styling
+  const keyStyleTick = (d)=>{
+    d.style.position = 'absolute';
+    d.style.top = '12px';
+    d.style.width = '2px';
+    d.style.height = '20px';
+    d.style.background = 'rgba(255,255,255,.70)';
+    d.style.transform = 'translateX(-1px)';
+    d.style.borderRadius = '2px';
+  };
+  const keyStyleLabel = (d)=>{
+    d.style.position = 'absolute';
+    d.style.top = '0px';
+    d.style.fontSize = '11px';
+    d.style.opacity = '.78';
+    d.style.transform = 'translateX(-50%)';
+    d.style.whiteSpace = 'nowrap';
+  };
+
+  // Midnight(s) in next 48h, local time
+  try{
+    const base = new Date(baseMs);
+    const firstMid = new Date(base);
+    firstMid.setHours(0,0,0,0);
+    if (firstMid.getTime() <= baseMs) firstMid.setDate(firstMid.getDate()+1);
+    for (let k=0;k<3;k++){
+      const ms = firstMid.getTime() + k*24*3600*1000;
+      const h = (ms - baseMs)/3600/1000;
+      if (h >= 0 && h <= 48){
+        const x = (h/48)*W;
+
+        const tick = document.createElement('div');
+        tick.style.left = x.toFixed(3) + '%';
+        keyStyleTick(tick);
+        el.appendChild(tick);
+
+        const lab = document.createElement('div');
+        lab.textContent = '00:00';
+        lab.style.left = x.toFixed(3) + '%';
+        keyStyleLabel(lab);
+        el.appendChild(lab);
+      }
+    }
+  }catch(_){}
+
+  // Sunrise/Sunset: sun altitude threshold crossings
+  const sunThresh = -0.833;
+  if (isFinite(lat) && isFinite(lon) && typeof sunCalcAltitudeDegUTC === 'function'){
+    try{
+      const alts = [];
+      for (let i=0;i<hours;i++){
+        const dUTC = new Date(baseMs + i*3600*1000);
+        alts.push(sunCalcAltitudeDegUTC(lat, lon, dUTC));
+      }
+      for (let i=0;i<hours-1;i++){
+        const a0 = alts[i], a1 = alts[i+1];
+        const s0 = (a0 <= sunThresh), s1 = (a1 <= sunThresh);
+        if (s0 !== s1){
+          const t = (sunThresh - a0) / (a1 - a0);
+          const h = i + clamp(t,0,1);
+          const x = (h/48)*W;
+
+          const tick = document.createElement('div');
+          tick.style.left = x.toFixed(3) + '%';
+          keyStyleTick(tick);
+          el.appendChild(tick);
+
+          const lab = document.createElement('div');
+          lab.textContent = (s0 === true && s1 === false) ? 'Sunrise' : 'Sunset';
+          lab.style.left = x.toFixed(3) + '%';
+          keyStyleLabel(lab);
+          el.appendChild(lab);
+        }
+      }
+    }catch(_){}
+  }
+}
+
+function ensureAuroraUI(){
+    if (document.getElementById('auroraBox')) return;
+
+    const sunBox = document.getElementById('sunBox');
+    const parent = sunBox ? sunBox.parentElement : document.getElementById('detail');
+    if (!parent) return;
+
+    const box = document.createElement('div');
+    box.className = 'box';
+
+    // Step4: match the visual 'card' language of other panels (minimal, tool-like)
+    box.style.marginTop = '10px';
+    box.style.padding = '10px';
+    box.style.borderRadius = '10px';
+    box.style.border = '1px solid rgba(255,255,255,0.08)';
+    box.style.background = 'rgba(0,0,0,0.25)';
+    box.style.color = 'inherit';
+    box.id = 'auroraBox';
+    box.setAttribute('data-panel-id', AURORA_PANEL_ID);
+    box.setAttribute('data-panel-collapsible', '1');
+
+    box.innerHTML = `
+<div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+    <div style="font-weight:700;">Aurora (KP) &amp; Himmel</div>
+    <div style="display:flex; align-items:center; gap:8px;">
+      <div style="opacity:.65; font-size:12px;">Data: NOAA/SWPC + Open-Meteo</div>
+      <button type="button" id="auroraToggleBtn" aria-expanded="true" aria-label="Panel ein-/ausklappen"
+        style="border:1px solid rgba(255,255,255,.15); background:rgba(255,255,255,.06); color:inherit; border-radius:999px; padding:6px 10px; cursor:pointer; line-height:1;">
+        ▾
+      </button>
+    </div>
+  </div>
+
+  <div id="auroraBody" style="margin-top:10px;">
+    <div class="small-note">KP ist global (Geophysik). Sichtbar wird’s nur in Dunkelheit. Wolken/Regen sind standortbezogen.</div>
+
+    <div style="margin-top:10px; opacity:.95; font-weight:700;">Jetzt – Nachtfenster</div>
+    <div id="auroraNowMeta" style="opacity:.75; margin-top:4px; font-size:12px;">—</div>
+
+    <div class="sun-graph-wrap aurora-graph-wrap" id="auroraNowWrap" style="margin-top:10px; position:relative; overflow:visible; height:170px;">
+      <svg id="auroraNowSunSvg" viewBox="0 0 100 100" preserveAspectRatio="none" style="position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;opacity:.55;">
+        <path id="auroraNowSunPath" d="" fill="none" stroke="rgba(255,255,255,.22)" stroke-width="2" />
+      </svg>
+      <div class="aurora-bars" id="auroraNowBars"></div>
+      <div class="aurora-marker" id="auroraNowMarker"></div>
+      <div id="auroraNowTimeline2h" style="position:relative; height:34px; margin-top:6px; opacity:.92; pointer-events:none;">  <div style="position:absolute; left:0; right:0; top:14px; height:1px; background:rgba(255,255,255,.10);"></div></div>
+<div id="auroraNowTimes" style="display:flex; justify-content:space-between; opacity:.8; margin-top:6px; font-size:12px;"></div>
+      
+    </div>
+
+    <div id="auroraNowSel" style="margin-top:8px; opacity:.95;">Auswahl: —</div>
+
+    <div style="margin-top:12px; display:flex; align-items:center; justify-content:space-between;">
+      <div style="opacity:.95; font-weight:700;">Planung öffnen — +48h</div>
+      <button type="button" id="auroraPlanToggle" aria-expanded="true" aria-label="48h ein-/ausklappen"
+        style="border:1px solid rgba(255,255,255,.12); background:rgba(255,255,255,.04); color:inherit; border-radius:999px; padding:5px 10px; cursor:pointer; line-height:1;">
+        ▾
+      </button>
+    </div>
+
+    <div id="auroraPlanBody" style="margin-top:10px;">
+      <div class="sun-graph-wrap aurora-graph-wrap" style="margin-top:10px; position:relative; overflow:hidden;">
+        <svg id="auroraSunSvg" viewBox="0 0 100 100" preserveAspectRatio="none" style="position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;opacity:.55;">
+          <path id="auroraSunPath" d="" fill="none" stroke="rgba(255,255,255,.22)" stroke-width="2" />
+        </svg>
+        <div class="aurora-bars" id="auroraBars"></div>
+        <div class="aurora-marker" id="auroraMarker"></div>
+<div id="auroraTimeline48" style="position:absolute; left:10px; right:10px; bottom:2px; height:34px; opacity:.92; pointer-events:none; z-index:4;">
+  <div style="position:absolute; left:0; right:0; top:22px; height:1px; background:rgba(255,255,255,.10);"></div>
+</div>
+<div id="auroraFeelingFooter" style="margin-top:10px; padding-top:8px; border-top:1px solid rgba(255,255,255,.08); opacity:.82;">
+  <div id="auroraFeelingNow" style="margin-bottom:6px;"></div>
+  <div id="auroraFeeling48"></div>
+</div>
+
+
+        <div class="aurora-end-labels" style="display:flex; justify-content:space-between; opacity:.8; margin-top:6px; font-size:12px;">
+          <span>+0h</span><span>+48h</span>
+        </div>
+      </div>
+
+      </div>
+
+      <div id="auroraSel" style="margin-top:8px; opacity:.95;">Auswahl +0h: · KP — (—) · —% Wolken · —% Regenrisiko · Niederschlag: — mm</div>
+    </div>
+  </div>
+`;
+// Step4: collapse/expand (toggle on the right, like other boxes)
+    const tBtn = box.querySelector('#auroraToggleBtn');
+    const body = box.querySelector('#auroraBody');
+    if (tBtn && body){
+      tBtn.addEventListener('click', () => {
+        const isOpen = body.style.display !== 'none';
+        body.style.display = isOpen ? 'none' : '';
+        tBtn.textContent = isOpen ? '▸' : '▾';
+        tBtn.setAttribute('aria-expanded', isOpen ? 'false' : 'true');
+      });
+    }
+// insert directly after sunBox (visual pairing)
+    if (sunBox && sunBox.nextSibling){
+      parent.insertBefore(box, sunBox.nextSibling);
+    } else {
+      parent.appendChild(box);
+    }
+
+    // Register in collapsible system (session-only)
+    try{
+      if (window.__DA_PANEL__ && window.__DA_PANEL__.register){
+        window.__DA_PANEL__.register(box, AURORA_PANEL_ID, false);
+      }
+    }catch(_){}
+  
+// Step9: plan (+48h) collapse/expand (matches other boxes)
+const pBtn = box.querySelector('#auroraPlanToggle');
+const pBody = box.querySelector('#auroraPlanBody');
+if (pBtn && pBody){
+  pBtn.addEventListener('click', () => {
+    const isOpen = pBody.style.display !== 'none';
+    pBody.style.display = isOpen ? 'none' : '';
+    pBtn.textContent = isOpen ? '▸' : '▾';
+    pBtn.setAttribute('aria-expanded', isOpen ? 'false' : 'true');
+  });
+}
+
+}
+
+  function buildTicks(){
+    const el = document.getElementById('auroraTicks');
+    if (!el) return;
+    // show every 6h as label – minimal
+    const parts = [];
+    for (let h=0; h<=48; h+=6){
+      parts.push(`<span class="sun-hour" data-aurora-tick="${h}">+${h}h</span>`);
+    }
+    el.innerHTML = parts.join('');
+  }
+
+  function renderAurora(){
+    const barsEl = document.getElementById('auroraBars');
+    const selEl = document.getElementById('auroraSel') || document.getElementById('auroraSelection');
+    const markerEl = document.getElementById('auroraMarker');
+    if (!barsEl || !selEl || !markerEl) return;
+
+    // Step3b: ensure predictable bar rendering (percent heights need explicit parent height)
+    // Keep it minimal & tool-like: fixed strip height, bars grow in px.
+    if (!barsEl.__auroraBarsInit){
+      const wrap = barsEl.parentElement;
+      if (wrap){
+        wrap.style.position = 'relative';
+        wrap.style.overflow = 'hidden';
+      }
+      barsEl.style.display = 'flex';
+      barsEl.style.alignItems = 'flex-end';
+      barsEl.style.gap = '2px';
+      // a calm, readable strip – like a scale, not a light show
+      barsEl.style.height = '120px';
+      barsEl.style.padding = '12px 12px 18px 12px';
+      markerEl.style.position = 'absolute';
+      markerEl.style.top = '8px';
+      markerEl.style.bottom = '18px';
+      markerEl.style.width = '2px';
+      markerEl.style.opacity = '.65';
+      markerEl.style.background = 'rgba(255,255,255,.35)';
+      markerEl.style.borderRadius = '2px';
+      markerEl.style.pointerEvents = 'none';
+      barsEl.__auroraBarsInit = true;
+    }
+
+    if (!auroraKpSeries || !auroraWxSeries){
+      barsEl.innerHTML = '';
+      selEl.textContent = 'Auswahl: —';
+      return;
+// Step13.2 (Hybrid, "flüstern" unten): Gefühl für aktuelle Nacht + 48h Planung
+try{
+  const cfAt = (i)=>{
+    const wx = auroraWxSeries && auroraWxSeries[i] ? auroraWxSeries[i] : null;
+    const cloud = (wx && wx.cloud != null && isFinite(wx.cloud)) ? Number(wx.cloud) : null;
+    return (cloud == null) ? 1 : Math.max(0, Math.min(1, 1 - cloud/100));
+  };
+
+  // NOW-night feeling: take the best feeling within the current dark window (winStart..winEnd)
+  let bestNowScore = -1;
+  let bestNowIdx = winStart;
+  for (let i=winStart; i<=winEnd; i++){
+    const kp = auroraKpSeries[i];
+    const score = computeAuroraFeeling(kp, darkF2[i], cfAt(i));
+    if (score > bestNowScore){
+      bestNowScore = score;
+      bestNowIdx = i;
+    }
+  }
+
+  // 48h feeling: best feeling within the next 48h where it's at least a bit dark
+  let best48Score = -1;
+  let best48Idx = 0;
+  for (let i=0;i<=48;i++){
+    const kp = auroraKpSeries[i];
+    const score = computeAuroraFeeling(kp, darkF[i], cfAt(i));
+    if (score > best48Score){
+      best48Score = score;
+      best48Idx = i;
+    }
+  }
+
+  const kpNowBest = auroraKpSeries[bestNowIdx];
+  const kp48Best = auroraKpSeries[best48Idx];
+
+  renderAuroraFeelingLabeled('auroraFeelingNow', 'Jetzt (dunkel genug)', kpNowBest, darkF2[bestNowIdx], cfAt(bestNowIdx));
+  renderAuroraFeelingLabeled('auroraFeeling48', '+48h (beste Phase)', kp48Best, darkF[best48Idx], cfAt(best48Idx));
+}catch(_){}
+
+    }
+
+    const maxKP = 9;
+    // Step5b: exaggerated, clearly readable KP bars (we'll dial back later)
+const maxKP_BAR = 9;
+const maxPx = 110;   // exaggerated on purpose
+const minPx = 28;    // KP2 should be obvious
+const gamma = 0.42;  // lifts low KP
+
+function kpColor(kp){
+  if (!isFinite(kp)) return "rgba(255,255,255,.18)";
+  if (kp >= 5) return "rgba(180, 120, 255, .92)"; // >4 → purple
+  if (kp >= 4) return "rgba(90, 255, 160, .92)";  // KP4 → green
+  if (kp >= 2) return "rgba(255, 220, 80, .92)";  // KP2-3 → yellow
+  return "rgba(90, 255, 160, .75)";               // KP0-1 → green low
+}
+
+// Build 0..48h (49 bars) from available KP points (nearest-by-hour)
+const now = Date.now();
+const hours = 49;
+
+// Step9: NOW view = current dark window (for immediate decisions)
+const nowBarsEl = document.getElementById('auroraNowBars');
+const nowMarkerEl = document.getElementById('auroraNowMarker');
+const nowTimesEl = document.getElementById('auroraNowTimes');
+const nowMetaEl = document.getElementById('auroraNowMeta');
+
+const pSun2 = (typeof window !== 'undefined' && window.__DA_SUN_PLAN_LAST_PAYLOAD__) ? window.__DA_SUN_PLAN_LAST_PAYLOAD__ : null;
+const lat2 = isFinite(pSun2?.lat) ? Number(pSun2.lat) : (latInput ? parseFloat(latInput.value) : NaN);
+const lon2 = isFinite(pSun2?.lon) ? Number(pSun2.lon) : (lonInput ? parseFloat(lonInput.value) : NaN);
+const darkF2 = new Array(hours).fill(1);
+const dark2 = new Array(hours).fill(true);
+if (isFinite(lat2) && isFinite(lon2)){
+  const base2 = Date.now();
+  for (let i=0;i<hours;i++){
+    const dUTC = new Date(base2 + i*3600*1000);
+    const f = auroraDarknessFactorUTC(lat2, lon2, dUTC);
+    darkF2[i] = f;
+    dark2[i] = (f >= 0.05);
+  }
+}
+
+let winStart = 0;
+if (dark2[0] === false){
+  let firstDark = -1;
+  for (let i=0;i<hours;i++){ if (dark2[i] === true){ firstDark = i; break; } }
+  if (firstDark >= 0) winStart = firstDark;
+}
+let winEnd = winStart;
+while (winEnd+1 < hours && dark2[winEnd+1] === true) winEnd++;
+if (winEnd - winStart > 12) winEnd = winStart + 12;
+
+const nowCount = Math.max(1, winEnd - winStart + 1);
+if (nowBarsEl){
+        nowBarsEl.style.display = 'flex'; nowBarsEl.style.gap = '4px'; nowBarsEl.style.alignItems = 'flex-end'; nowBarsEl.style.height = '88px';
+
+  nowBarsEl.textContent = '';
+  for (let i=0;i<nowCount;i++){
+    const el = document.createElement('div');
+    el.style.flex = '1 1 0';
+    el.style.borderRadius = '4px';
+    el.style.cursor = 'pointer';
+    nowBarsEl.appendChild(el);
+  }
+}
+if (nowMarkerEl){
+  nowMarkerEl.style.position = 'absolute';
+  nowMarkerEl.style.top = '8px';
+  nowMarkerEl.style.bottom = '18px';
+  nowMarkerEl.style.width = '2px';
+  nowMarkerEl.style.opacity = '.65';
+  nowMarkerEl.style.background = 'rgba(255,255,255,.35)';
+  nowMarkerEl.style.borderRadius = '2px';
+  nowMarkerEl.style.pointerEvents = 'none';
+}
+// Step18 (Thomas): NOW timeline under the bars — starts at CURRENT time on every refresh (blue labels)
+if (nowBarsEl){
+  const wrapNow = document.getElementById('auroraNowWrap');
+  if (wrapNow){
+    let axisNow = document.getElementById('auroraNowHourAxisRow');
+    if (!axisNow){
+      axisNow = document.createElement('div');
+      axisNow.id = 'auroraNowHourAxisRow';
+      axisNow.style.marginTop = '8px';
+      axisNow.style.paddingTop = '6px';
+      axisNow.style.borderTop = '1px solid rgba(255,255,255,.10)';
+      axisNow.style.display = 'grid';
+      axisNow.style.gap = '4px';
+      axisNow.style.alignItems = 'start';
+      axisNow.style.fontSize = '12px';
+      axisNow.style.lineHeight = '1';
+      axisNow.style.color = 'rgba(80, 170, 255, .98)'; // blue, so you can't miss it
+      axisNow.style.userSelect = 'none';
+      axisNow.style.pointerEvents = 'none';
+      axisNow.style.opacity = '.95';
+      wrapNow.appendChild(axisNow);
+    }
+    axisNow.style.gridTemplateColumns = `repeat(${nowCount}, 1fr)`;
+    axisNow.textContent = '';
+    for (let i=0; i<nowCount; i++){
+      const t = new Date(now + i*3600000);
+      const lab = document.createElement('div');
+      lab.textContent = fmtHHMM(t);
+      lab.style.textAlign = 'center';
+      lab.style.whiteSpace = 'nowrap';
+      axisNow.appendChild(lab);
+    }
+  }
+}
+
+// NOW: hide grey edge-times (we keep the BLUE axis below as primary planning cue)
+if (nowTimesEl){
+  nowTimesEl.textContent = '';
+  nowTimesEl.style.display = 'none';
+}
+
+// We still compute the NOW window start/end times for the 2h ticks helper
+const __da_now_tStart = new Date(Date.now() + winStart*3600*1000);
+const __da_now_tEnd   = new Date(Date.now() + winEnd*3600*1000);
+try{ renderAuroraNowTimeline2h(__da_now_tStart.getTime(), __da_now_tEnd.getTime()); }catch(_){ }
+if (nowMetaEl){
+  nowMetaEl.textContent = (dark2[winStart] === true) ? `Dunkel: +${winStart}h bis +${winEnd}h` : `Kein Dunkelfenster in Sicht`;
+}
+// NOW: photographer hour-axis under the bars (hourly, starting at "now")
+try{
+  if (nowBarsEl && isFinite(winStart) && isFinite(winEnd)){
+    const nowMs = Date.now();
+    const tStartMs = nowMs + winStart*3600*1000;
+    const tEndMs = nowMs + winEnd*3600*1000;
+    renderAuroraNowHourAxis(tStartMs, tEndMs, nowBarsEl);
+  }
+}catch(_){ }
+
+
+
+// NOW: draw inverse sun curve (variant B) inside the NOW window
+try{
+  const svgN = document.getElementById('auroraNowSunSvg');
+  const pathN = document.getElementById('auroraNowSunPath');
+  if (svgN && pathN && isFinite(lat2) && isFinite(lon2)){
+    const pts = [];
+    const base2 = Date.now();
+    for (let j=0;j<nowCount;j++){
+      const idx = winStart + j;
+      const dUTC = new Date(base2 + idx*3600*1000);
+      const alt = sunCalcAltitudeDegUTC(lat2, lon2, dUTC);
+      const inv = auroraDarknessFactorFromSunAlt(alt);
+      const x = (nowCount<=1) ? 0 : (j/(nowCount-1))*100;
+      const y = 12 + inv*76;
+      pts.push([x,y]);
+    }
+    let d = '';
+    for (let i=0;i<pts.length;i++){
+      d += (i===0 ? 'M' : 'L') + pts[i][0].toFixed(2) + ' ' + pts[i][1].toFixed(2) + ' ';
+    }
+    pathN.setAttribute('d', d.trim());
+  }
+}catch(_){}
+
+const bars = [];
+for (let i=0;i<hours;i++){
+  const target = now + i*3600*1000;
+  // nearest point in series
+  let best = null;
+  let bestD = Infinity;
+  for (const p of auroraKpSeries){
+    const d = Math.abs(p.ms - target);
+    if (d < bestD){ bestD = d; best = p; }
+  }
+  bars.push(best ? best.kp : NaN);
+}
+
+barsEl.textContent = '';
+for (let i=0;i<hours;i++){
+  const kp = Number(bars[i]);
+  const t = clamp((isFinite(kp) ? kp : 0) / maxKP_BAR, 0, 1);
+  const hPx = (minPx + Math.pow(t, gamma) * (maxPx - minPx));
+
+  const d = document.createElement('div');
+  d.style.flex = '1 1 0';
+  d.style.height = hPx + 'px';
+  d.style.borderRadius = '4px';
+  d.style.background = kpColor(kp);
+  d.style.opacity = (i === auroraSelectedIdx) ? '1' : '.78';
+  d.style.outline = (i === auroraSelectedIdx) ? '2px solid rgba(255,255,255,.55)' : '0';
+  d.style.cursor = 'pointer';
+
+  d.addEventListener('click', () => setAuroraSelectedIdx(i));
+  barsEl.appendChild(d);
+}
+
+const n = auroraKpSeries.length; // 49
+    const barW = 100 / n;
+
+    const html = [];
+    for (let i=0;i<n;i++){
+      const kp = auroraKpSeries[i];
+      const maxPx = 56;
+      const minPx = 18;
+      const t = clamp((kp / maxKP_BAR), 0, 1);
+      const gamma = 0.55; // lift low KP a touch
+      const hPx = Math.round(minPx + Math.pow(t, gamma) * (maxPx - minPx));
+      const strong = (kp >= 5);
+      const mild = (kp >= 4 && kp < 5);
+      // minimal, aber "greifbar": neutral + Akzent bei relevant
+      const bg = strong ? 'rgba(255,214,94,.85)' : mild ? 'rgba(255,214,94,.45)' : 'rgba(255,255,255,.18)';
+      const glow = strong ? '0 0 10px rgba(255,214,94,.28)' : mild ? '0 0 8px rgba(255,214,94,.18)' : 'none';
+
+      html.push(
+        `<div class="aurora-bar" data-aurora-idx="${i}" title="+${i}h | KP ${isFinite(kp)?kp.toFixed(1):'—'}"
+          style="flex:1 1 0; height:${hPx}px; background:${bg}; border-radius:2px; box-shadow:${glow}; opacity:${i===auroraSelectedIdx?1:0.85}; outline:${i===auroraSelectedIdx?'2px solid rgba(255,255,255,.28)':'none'}; outline-offset:0px;"></div>`
+      );
+    }
+    barsEl.innerHTML = html.join('');
+
+// highlight ticks (every 6h) to match selection
+try{
+  const tWrap = document.getElementById('auroraTicks');
+  if (tWrap){
+    const spans = tWrap.querySelectorAll('.sun-hour[data-aurora-tick]');
+    spans.forEach(sp=>{
+      const h = Number(sp.getAttribute('data-aurora-tick'));
+      const active = (isFinite(h) && h === auroraSelectedIdx);
+      sp.style.opacity = active ? '1' : '.75';
+      sp.style.textDecoration = active ? 'underline' : 'none';
+    });
+  }
+}catch(_){}
+
+    // marker position
+    const rect = barsEl.getBoundingClientRect();
+    const wrapW = rect.width || 1;
+    const padL = 10;
+    const padR = 10;
+    const usable = Math.max(1, wrapW - padL - padR);
+    const x = padL + (usable * (auroraSelectedIdx / (n-1)));
+    markerEl.style.left = x + 'px';
+
+    // selection text
+    const tMs = auroraNow0 + auroraSelectedIdx * 3600e3;
+    const kp = auroraKpSeries[auroraSelectedIdx];
+    const wx = auroraWxSeries[auroraSelectedIdx] || {};
+    const cloud = (wx.cloud != null && isFinite(wx.cloud)) ? Math.round(wx.cloud) : null;
+    const pp = (wx.pp != null && isFinite(wx.pp)) ? Math.round(wx.pp) : null;
+    const pr = (wx.pr != null && isFinite(wx.pr)) ? wx.pr : null;
+
+    const bits = [];
+    bits.push(`Auswahl +${auroraSelectedIdx}h (${fmtClockUTC(tMs)}):`);
+    bits.push(`KP ${isFinite(kp)?kp.toFixed(1):'—'} (${auroraQual(kp)})`);
+    if (cloud != null) bits.push(`${cloud}% Wolken`);
+    if (pp != null) bits.push(`${pp}% Regenrisiko`);
+    if (pr != null && isFinite(pr)) bits.push(`Niederschlag: ${pr.toFixed(1)} mm`);
+    selEl.textContent = bits.join(' · ');
+  
+  // Step5e: enforce visible KP bars + photographer colors (final pass, no console noise)
+  try{
+    if (barsEl && Array.isArray(auroraKpSeries) && auroraKpSeries.length){
+      const hours = 49;
+
+      const maxKP_BAR = 9;
+      const maxPx = 140;   // tuned for visible decimal changes (not 'more drama')
+      const minPx = 20;    // KP2 still obvious
+      const gamma = 1.00;  // linear: decimals translate directly to pixels
+
+      // Ensure exactly 49 bars exist
+      if (!barsEl.children || barsEl.children.length !== hours){
+        barsEl.textContent = '';
+        for (let i=0;i<hours;i++){
+          const d = document.createElement('div');
+          d.style.flex = '1 1 0';
+          d.style.borderRadius = '4px';
+          d.style.cursor = 'pointer';
+          d.addEventListener('click', () => setAuroraSelectedIdx(i));
+          barsEl.appendChild(d);
+        }
+      }
+
+      
+// Step7: hide daylight – Aurora only makes sense in darkness.
+// We keep the 48h window (planning) but visually suppress sunlit hours with a soft twilight fade.
+const pSun = (typeof window !== 'undefined' && window.__DA_SUN_PLAN_LAST_PAYLOAD__) ? window.__DA_SUN_PLAN_LAST_PAYLOAD__ : null;
+const latNow = isFinite(pSun?.lat) ? Number(pSun.lat) : (latInput ? parseFloat(latInput.value) : NaN);
+const lonNow = isFinite(pSun?.lon) ? Number(pSun.lon) : (lonInput ? parseFloat(lonInput.value) : NaN);
+
+const base = Date.now();
+const darkF = new Array(hours).fill(1);
+const dark  = new Array(hours).fill(true);
+
+if (isFinite(latNow) && isFinite(lonNow)){
+  for (let i=0;i<hours;i++){
+    const dUTC = new Date(base + i*3600*1000);
+    const f = auroraDarknessFactorUTC(latNow, lonNow, dUTC); // 0..1
+    darkF[i] = f;
+    dark[i]  = (f >= 0.05); // practical: almost day -> treat as day for snapping
+  }
+
+  // Inverse "darkness" curve: high = night, low = day (so sun vs aurora can "speak")
+  try{
+    const svg = document.getElementById('auroraSunSvg');
+    const path = document.getElementById('auroraSunPath');
+    if (svg && path){
+      const pts = [];
+      for (let i=0;i<hours;i++){
+        const dUTC = new Date(base + i*3600*1000);
+        const alt = sunCalcAltitudeDegUTC(latNow, lonNow, dUTC);
+        const inv = auroraDarknessFactorFromSunAlt(alt); // 0..1 (day..night)
+        const x = (i/(hours-1))*100;
+        const y = 12 + inv*76;
+        pts.push([x,y]);
+      }
+      let d = '';
+      for (let i=0;i<pts.length;i++){
+        d += (i===0 ? 'M' : 'L') + pts[i][0].toFixed(2) + ' ' + pts[i][1].toFixed(2) + ' ';
+      }
+      path.setAttribute('d', d.trim());
+    }
+  }catch(_){}
+}
+
+const kids = Array.from(barsEl.children || []);
+// If current selection lands in daylight, snap to nearest dark hour (avoid confusing outputs)
+if (dark[auroraSelectedIdx] === false){
+  let best = -1, bestD = 1e9;
+  for (let j=0;j<hours;j++){
+    if (dark[j] === true){
+      const d = Math.abs(j - auroraSelectedIdx);
+      if (d < bestD){ bestD = d; best = j; }
+    }
+  }
+  if (best >= 0) auroraSelectedIdx = best;
+}
+
+      for (let i=0;i<Math.min(hours, kids.length);i++){
+        // auroraKpSeries in this app is already indexed 0..48 (numbers)
+        const kp = Number(auroraKpSeries[i]);
+        const t = clamp((isFinite(kp) ? kp : 0) / maxKP_BAR, 0, 1);
+        const hPx = Math.round(minPx + Math.pow(t, gamma) * (maxPx - minPx));
+
+        // Color mapping (as requested):
+        // KP2-3 yellow, KP4 green, >4 purple. (KP0-1 low green)
+        let col = "rgba(90, 255, 160, .75)";
+        if (isFinite(kp)){
+          if (kp > 4) col = "rgba(180, 120, 255, .92)";
+          else if (kp >= 4) col = "rgba(90, 255, 160, .92)";
+          else if (kp >= 2) col = "rgba(255, 220, 80, .92)";
+          else col = "rgba(90, 255, 160, .75)";
+        } else {
+          col = "rgba(255,255,255,.14)";
+        }
+
+        const el = kids[i];
+        // daylight suppression
+        if (dark[i] === false){
+          col = 'rgba(255,255,255,.07)';
+        }
+
+        const fDark = (typeof darkF !== 'undefined' && isFinite(darkF[i])) ? darkF[i] : (dark[i] ? 1 : 0);
+        const baseH = hPx;
+        const scaledH = 6 + (baseH - 6) * (0.15 + 0.85 * fDark);
+        el.style.height = scaledH.toFixed(1) + 'px';
+        // use !important to win against any existing CSS
+        el.style.setProperty('background', col, 'important');
+        el.style.setProperty('background-color', col, 'important');
+        el.style.transition = 'height 260ms ease, background-color 260ms ease, outline-color 260ms ease';
+        const fDark2 = (typeof darkF !== 'undefined' && isFinite(darkF[i])) ? darkF[i] : (dark[i] ? 1 : 0);
+        const baseOp = (i === auroraSelectedIdx) ? 1 : 0.78;
+        el.style.opacity = (0.22 + 0.78 * fDark2) * baseOp + '';
+        el.style.outline = (i === auroraSelectedIdx) ? '2px solid rgba(255,255,255,.55)' : '0';
+      }
+
+// NOW bars styling (same mapping + height sensitivity)
+try{
+  if (nowBarsEl && nowBarsEl.children && nowBarsEl.children.length){
+    const kidsN = Array.from(nowBarsEl.children);
+    for (let j=0;j<kidsN.length;j++){
+      const idx = winStart + j;
+      const kp = Number(auroraKpSeries[idx]);
+      const tN = clamp((isFinite(kp) ? kp : 0) / maxKP_BAR, 0, 1);
+      const hN = (minPx + Math.pow(tN, gamma) * (maxPx - minPx));
+
+      let colN = "rgba(90, 255, 160, .75)";
+      if (isFinite(kp)){
+        if (kp > 4) colN = "rgba(180, 120, 255, .92)";
+        else if (kp >= 4) colN = "rgba(90, 255, 160, .92)";
+        else if (kp >= 2) colN = "rgba(255, 220, 80, .92)";
+        else colN = "rgba(90, 255, 160, .75)";
+      } else {
+        colN = "rgba(255,255,255,.14)";
+      }
+
+      const el = kidsN[j];
+      const fDarkN = (typeof darkF2 !== 'undefined' && isFinite(darkF2[idx])) ? darkF2[idx] : (dark2[idx] ? 1 : 0);
+      const scaledHN = 10 + (hN - 10) * (0.15 + 0.85 * fDarkN);
+      el.style.height = scaledHN.toFixed(1) + 'px';
+      el.style.setProperty('background', colN, 'important');
+      el.style.setProperty('background-color', colN, 'important');
+      el.style.opacity = (0.22 + 0.78 * ((typeof darkF2 !== 'undefined' && isFinite(darkF2[idx])) ? darkF2[idx] : 1)) + '';
+      el.style.transition = 'height 260ms ease, background-color 260ms ease, outline-color 260ms ease';
+      el.onclick = () => setAuroraSelectedIdx(idx);
+    }
+
+    if (nowMarkerEl){
+      const sel = (auroraSelectedIdx >= winStart && auroraSelectedIdx <= winEnd) ? (auroraSelectedIdx - winStart) : 0;
+      const pct = (kidsN.length <= 1) ? 0 : (sel / (kidsN.length-1));
+      nowMarkerEl.style.left = (pct*100).toFixed(2) + '%';
+    }
+  }
+}catch(_){}
+
+    }
+  }catch(e){
+    // silent by design
+  }
+}
+
+  async function fetchJson(url){
+    const res = await fetch(url, { cache:'no-cache' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return await res.json();
+  }
+
+  
+  // Step5: bar color mapping for photographers (clear & immediate)
+  function kpBarColor(kp){
+    if (!isFinite(kp)) return "rgba(255,255,255,.18)";
+    if (kp <= 1.999) return "rgba(60, 255, 140, .70)";       // KP0-1: green (low)
+    if (kp <= 3.999) return "rgba(255, 220, 80, .80)";       // KP2-3: yellow (possible)
+    if (kp <= 4.000) return "rgba(90, 255, 160, .85)";       // KP4: green (good)
+    return "rgba(180, 120, 255, .85)";                       // >4: purple (strong)
+  }
+
+function parseKpSeries(js){
+  // Accept both:
+  //  1) Array of objects: [{time_tag, kp_index}, ...]
+  //  2) NOAA SWPC "products" format: [ [header...], [row...], ... ]
+  if (!Array.isArray(js)) return [];
+
+  // NOAA "products" format → convert to object rows
+  if (js.length && Array.isArray(js[0])){
+    const header = js[0].map(h => String(h || "").trim());
+    const rows = [];
+    for (let i=1;i<js.length;i++){
+      const arr = js[i];
+      if (!Array.isArray(arr)) continue;
+      const obj = {};
+      for (let c=0;c<header.length;c++){
+        obj[header[c]] = arr[c];
+      }
+      rows.push(obj);
+    }
+    js = rows;
+  }
+
+  const out = [];
+  for (const r of js){
+    if (!r || typeof r !== 'object') continue;
+
+    // common SWPC keys: time_tag, kp_index; sometimes "Kp" or "kp"
+    const t = r.time_tag || r.time || r.datetime || r.date || r["time-tag"] || r["Time"] || null;
+
+    // kp can be under various keys depending on product
+    const kp =
+      (r.kp_index != null) ? r.kp_index :
+      (r.kp != null) ? r.kp :
+      (r.Kp != null) ? r.Kp :
+      (r.value != null) ? r.value :
+      (r["kp-index"] != null) ? r["kp-index"] :
+      null;
+
+    const ms = t ? Date.parse(String(t)) : NaN;
+    const kpf = (kp != null) ? Number(kp) : NaN;
+    if (isFinite(ms) && isFinite(kpf)) out.push({ ms, kp:kpf });
+  }
+  out.sort((a,b)=>a.ms-b.ms);
+  return out;
+}
+
+  function kpAt(ms, rows){
+    if (!rows || !rows.length) return NaN;
+    // last <= ms
+    let lo = 0, hi = rows.length - 1;
+    if (ms < rows[0].ms) return rows[0].kp;
+    if (ms >= rows[hi].ms) return rows[hi].kp;
+    // binary search for rightmost <= ms
+    while (lo <= hi){
+      const mid = (lo + hi) >> 1;
+      if (rows[mid].ms <= ms){ lo = mid + 1; }
+      else { hi = mid - 1; }
+    }
+    return rows[Math.max(0, lo-1)].kp;
+  }
+
+  function buildWx48(hourlyNorm, now0){
+    const out = new Array(49).fill(null).map(()=>({cloud:null, pp:null, pr:null}));
+    if (!hourlyNorm || !hourlyNorm.length) return out;
+
+    // create map by hour ms (rounded)
+    const map = new Map();
+    for (const r of hourlyNorm){
+      const ms = Date.parse(r.time);
+      if (!isFinite(ms)) continue;
+      const key = Math.round(ms/3600e3); // hour index
+      map.set(key, r);
+    }
+
+    for (let i=0;i<=48;i++){
+      const ms = now0 + i*3600e3;
+      const key = Math.round(ms/3600e3);
+      const r = map.get(key);
+      if (!r) continue;
+      out[i] = { cloud:r.cloud, pp:r.precipProb, pr:r.precip };
+    }
+    return out;
+  }
+
+  async function auroraUpdate(lat, lon, force=false){
+    try{
+      ensureAuroraUI();
+      buildTicks();
+
+      const now = Date.now();
+      const key = `${lat.toFixed(3)},${lon.toFixed(3)}`;
+      if (!force){
+        if (now - auroraLastFetchAt < AURORA_THROTTLE_MS) return;
+        if (key === auroraLastKey && now - auroraLastFetchAt < (AURORA_THROTTLE_MS*2)) return;
+      }
+      auroraLastFetchAt = now;
+      auroraLastKey = key;
+
+      // anchor: exact now (UTC) for +0..+48
+      auroraNow0 = now;
+
+      // 1) KP from NOAA (global)
+      let kpRows = [];
+      for (const url of AURORA_KP_URLS){
+        try{
+          const js = await fetchJson(url);
+          kpRows = parseKpSeries(js);
+          if (kpRows.length) break;
+        }catch(_){}
+      }
+
+      const kpSeries = [];
+      for (let i=0;i<=48;i++){
+        const ms = auroraNow0 + i*3600e3;
+        kpSeries.push(kpAt(ms, kpRows));
+      }
+      auroraKpSeries = kpSeries;
+
+      // 2) Wolken/Regen vom Standort (Open-Meteo Hourly)
+      let hourly = null;
+      try{
+        if (typeof sunFetchHourly === 'function'){
+          hourly = await sunFetchHourly(lat, lon, 'UTC');
+        }
+      }catch(_){}
+      let norm = [];
+      try{
+        if (typeof sunNormalizeHourly === 'function'){
+          norm = sunNormalizeHourly(hourly);
+        }
+      }catch(_){}
+      auroraWxSeries = buildWx48(norm, auroraNow0);
+
+      // clamp selected to range (in case)
+      auroraSelectedIdx = clamp(auroraSelectedIdx, 0, 48);
+
+      renderAurora();
+    }catch(_){
+      // leise bleiben – Aurora ist Zusatz
+    }
+  }
+
+  function installHooks(){
+    if (auroraHooksInstalled) return;
+
+    // click selection on bars
+    document.addEventListener('click', function(ev){
+      const b = ev.target && ev.target.closest ? ev.target.closest('.aurora-bar[data-aurora-idx]') : null;
+      if (!b) return;
+      const idx = Number(b.getAttribute('data-aurora-idx'));
+      if (!isFinite(idx)) return;
+      auroraSelectedIdx = clamp(idx, 0, 48);
+      try{ renderAurora(); }catch(_){}
+    });
+
+// click selection on 6h ticks
+document.addEventListener('click', function(ev){
+  const t = ev.target && ev.target.closest ? ev.target.closest('.sun-hour[data-aurora-tick]') : null;
+  if (!t) return;
+  const h = Number(t.getAttribute('data-aurora-tick'));
+  if (!isFinite(h)) return;
+  auroraSelectedIdx = clamp(h, 0, 48);
+  try{ renderAurora(); }catch(_){}
+});
+
+    // updateMap hook (GPS/manual/programmatic)
+    try{
+      if (typeof updateMap === 'function' && !updateMap.__auroraWrapped){
+        const _u = updateMap;
+        const wrapped = function(lat, lon, accuracyMeters=null){
+          const r = _u(lat, lon, accuracyMeters);
+          try{ auroraUpdate(lat, lon, true); }catch(_){}
+          return r;
+        };
+        wrapped.__auroraWrapped = true;
+        updateMap = wrapped;
+      }
+    }catch(_){}
+
+    // marker hooks (if available)
+    const w = setInterval(()=>{
+      try{
+        if (typeof marker !== 'undefined' && marker){
+          try{
+            const onMove = () => { try{ const p = marker.getLatLng(); auroraUpdate(p.lat, p.lng, false);}catch(_){} };
+            try{ marker.on('dragend', onMove); }catch(_){}
+            try{ marker.on('drag', onMove); }catch(_){}
+            // initial
+            try{ const p = marker.getLatLng(); auroraUpdate(p.lat, p.lng, true);}catch(_){}
+          }catch(_){}
+          clearInterval(w);
+        }
+      }catch(_){}
+    }, 250);
+
+    auroraHooksInstalled = true;
+  }
+
+  document.addEventListener('DOMContentLoaded', function(){
+    try{ ensureAuroraUI(); buildTicks(); }catch(_){}
+    try{ installHooks(); }catch(_){}
+  });
+
+})();
+
+
+/* pad */
+
+
+// ===============================
+// STEP 13 – Aurora Feeling Hybrid
+// ===============================
+
+function computeAuroraFeeling(kp, darknessFactor, cloudFactor){
+    const kpScore = Math.min(kp / 5, 1);
+    const darkScore = Math.max(0, Math.min(darknessFactor, 1));
+    const cloudScore = Math.max(0, Math.min(cloudFactor, 1));
+
+    const total =
+        kpScore * 0.5 +
+        darkScore * 0.3 +
+        cloudScore * 0.2;
+
+    return total * 100;
+}
+
+function feelingText(score){
+    if(score < 20) return "sehr ruhig";
+    if(score < 40) return "ruhig";
+    if(score < 60) return "ruhig → aktiv";
+    if(score < 75) return "aktiv";
+    if(score < 90) return "aktiv → intensiv";
+    return "magisch";
+}
+
+function feelingBar(score){
+    const filled = Math.round(score / 10);
+    return "■".repeat(filled) + "□".repeat(10-filled);
+}
+
+function renderAuroraFeeling(containerId, kp, darknessFactor, cloudFactor){
+    const el = document.getElementById(containerId);
+    if(!el) return;
+
+    const score = computeAuroraFeeling(kp, darknessFactor, cloudFactor);
+
+    el.innerHTML = `
+        <div style="margin-top:6px; font-size:13px; opacity:.9">
+            Aurora Gefühl: ${feelingText(score)}
+        </div>
+        <div style="font-size:14px; letter-spacing:1px; opacity:.75">
+            ${feelingBar(score)}
+        </div>
+    `;
+}
+function renderAuroraFeelingLabeled(containerId, label, kp, darknessFactor, cloudFactor){
+    const el = document.getElementById(containerId);
+    if(!el) return;
+
+    const score = computeAuroraFeeling(kp, darknessFactor, cloudFactor);
+    const txt = feelingText(score);
+    const bar = feelingBar(score);
+
+    el.innerHTML = `
+        <div style="font-size:12px; opacity:.70; margin-bottom:2px">${label}: ${txt}</div>
+        <div style="font-size:13px; letter-spacing:1px; opacity:.62">${bar}</div>
+    `;
+}
+
+
+// ===============================
+// STEP 13 – Aurora State (clean)
+// ===============================
+function ensureAuroraState(){
+  if(!window.__auroraState) window.__auroraState = {};
+  return window.__auroraState;
+}
+
+function updateAuroraState(payload){
+  const s = ensureAuroraState();
+  s.nightWindow = payload.nightWindow || null;
+  s.series = payload.series || null;
+  s.meta = payload.meta || null;
+  return s;
+}
+
+function renderAuroraFeelingFromState(){
+  try{
+    const s = ensureAuroraState();
+    const nw = s.nightWindow;
+    const ser = s.series;
+    if(!nw || !ser) return;
+
+    const kpArr = ser.kp;
+    const dark48 = ser.dark48;
+    const darkNow = ser.darkNow;
+    const wxArr = ser.wx;
+
+    const cloudFactor = (i)=>{
+      const wx = wxArr && wxArr[i] ? wxArr[i] : null;
+      const cloud = (wx && wx.cloud != null && isFinite(wx.cloud)) ? Number(wx.cloud) : null;
+      return (cloud == null) ? 1 : Math.max(0, Math.min(1, 1 - cloud/100));
+    };
+
+    // best NOW (within night window indices)
+    let bestNowScore = -1;
+    let bestNowIdx = nw.startIdx;
+    for(let i=nw.startIdx; i<=nw.endIdx; i++){
+      const score = computeAuroraFeeling(kpArr[i], darkNow[i], cloudFactor(i));
+      if(score > bestNowScore){
+        bestNowScore = score;
+        bestNowIdx = i;
+      }
+    }
+
+    // best 48h (0..48)
+    let best48Score = -1;
+    let best48Idx = 0;
+    for(let i=0;i<=48;i++){
+      const score = computeAuroraFeeling(kpArr[i], dark48[i], cloudFactor(i));
+      if(score > best48Score){
+        best48Score = score;
+        best48Idx = i;
+      }
+    }
+
+    if(typeof renderAuroraFeelingLabeled === "function"){
+      renderAuroraFeelingLabeled(
+        "auroraFeelingNow",
+        "Heute Nacht (beste Phase)",
+        kpArr[bestNowIdx],
+        darkNow[bestNowIdx],
+        cloudFactor(bestNowIdx)
+      );
+
+      renderAuroraFeelingLabeled(
+        "auroraFeeling48",
+        "+48h (beste Phase)",
+        kpArr[best48Idx],
+        dark48[best48Idx],
+        cloudFactor(best48Idx)
+      );
+    }
+  }catch(_){
+    // Konsole muss sauber bleiben: silent
+  }
+}
+
+
+
+
+
+
+
+// Step16b: hour axis under bars
