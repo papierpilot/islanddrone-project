@@ -184,12 +184,44 @@
     .privacy-text{ margin-top: 8px; color:#fff; opacity:.95; }
     .privacy-text p{ margin: 0 0 8px 0; }
 
+  
+    /* Handbuch-Button (öffnet PDF in neuem Tab, ohne App-Logik zu berühren) */
+    .headerbar{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+      margin-bottom:18px;
+    }
+    .headerbar .title{
+      margin:0;
+    }
+    .handbook-btn{
+      display:inline-block;
+      padding:10px 12px;
+      border-radius:12px;
+      border:1px solid rgba(255,255,255,.18);
+      background: rgba(255,255,255,.08);
+      color:#fff;
+      text-decoration:none;
+      font-size:14px;
+      font-weight:700;
+      line-height:1;
+      white-space:nowrap;
+    }
+    .handbook-btn:hover{
+      background: rgba(255,255,255,.12);
+    }
+
   </style>
 </head>
 
 <body>
   <div class="wrap">
-    <div class="title">Drone Ampel · Island (Live)</div>
+    <div class="headerbar">
+      <div class="title">Drone Ampel · Island (Live)</div>
+      <a class="handbook-btn" href="./docs/Handbuch_DroneAmpelIceland.pdf" target="_blank" rel="noopener">Handbuch</a>
+    </div>
 
     <div class="panel" data-panel-id="core" data-panel-collapsible="1">
       <div data-panel-body>
